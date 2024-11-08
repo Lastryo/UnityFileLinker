@@ -5,20 +5,16 @@ import * as path from 'path';
 const encoding = 'utf-8';
 
 export function activate(context: vscode.ExtensionContext) {
-    // Настраиваем наблюдатель за созданием, удалением и изменением файлов с расширением .cs
     const watcher = vscode.workspace.createFileSystemWatcher('**/*.cs');
     
-    // Обработчик срабатывает при создании нового файла
     watcher.onDidCreate((uri: vscode.Uri) => {
         addToCsproj(uri.fsPath);
     });
 
-    // Обработчик срабатывает при удалении файла
     watcher.onDidDelete((uri: vscode.Uri) => {
         removeFromCsproj(uri.fsPath);
     });
 
-    // Обработчик срабатывает при изменении имени файла
     vscode.workspace.onDidRenameFiles((event) => {
         event.files.forEach((file) => {
             renameInCsproj(file.oldUri.fsPath, file.newUri.fsPath);
@@ -28,16 +24,58 @@ export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(watcher);
 }
 
-// Функция добавления файла в Assembly-CSharp или Assembly-CSharp-Editor в зависимости от пути
+// Функции findNearestAsmdef и getAssemblyNameFromAsmdef как показано выше
+
+function findNearestAsmdef(filePath: string): string | null {
+    let dir = path.dirname(filePath);
+    const root = vscode.workspace.workspaceFolders![0].uri.fsPath;
+
+    while (dir.startsWith(root)) {
+        const asmdefFiles = fs.readdirSync(dir).filter(file => file.endsWith('.asmdef'));
+        if (asmdefFiles.length > 0) {
+            return path.join(dir, asmdefFiles[0]);
+        }
+        const parentDir = path.dirname(dir);
+        if (parentDir === dir) {
+            break;
+        }
+        dir = parentDir;
+    }
+
+    return null;
+}
+
+function getAssemblyNameFromAsmdef(asmdefPath: string): string {
+    const content = fs.readFileSync(asmdefPath, encoding);
+    const asmdefJson = JSON.parse(content);
+    return asmdefJson.name;
+}
+
 function addToCsproj(filePath: string) {
     const workspaceFolders = vscode.workspace.workspaceFolders;
     if (!workspaceFolders) {
         return;
     }
 
-    const isEditorScript = filePath.includes(`${path.sep}Editor${path.sep}`);
-    const csprojName = isEditorScript ? 'Assembly-CSharp-Editor.csproj' : 'Assembly-CSharp.csproj';
-    const csprojPath = path.join(workspaceFolders[0].uri.fsPath, csprojName);
+    const rootPath = workspaceFolders[0].uri.fsPath;
+    let assemblyName = '';
+    let csprojName = '';
+    let csprojPath = '';
+
+    // Поиск ближайшего .asmdef файла
+    const asmdefPath = findNearestAsmdef(filePath);
+
+    if (asmdefPath) {
+        // Получаем имя сборки из .asmdef файла
+        assemblyName = getAssemblyNameFromAsmdef(asmdefPath);
+        csprojName = `${assemblyName}.csproj`;
+        csprojPath = path.join(rootPath, csprojName);
+    } else {
+        // Используем стандартные сборки Unity
+        const isEditorScript = filePath.includes(`${path.sep}Editor${path.sep}`);
+        csprojName = isEditorScript ? 'Assembly-CSharp-Editor.csproj' : 'Assembly-CSharp.csproj';
+        csprojPath = path.join(rootPath, csprojName);
+    }
 
     if (!fs.existsSync(csprojPath)) {
         vscode.window.showErrorMessage(`${csprojName} not found`);
@@ -45,7 +83,7 @@ function addToCsproj(filePath: string) {
     }
 
     let csprojContent = fs.readFileSync(csprojPath, encoding);
-    const relativePath = path.relative(workspaceFolders[0].uri.fsPath, filePath).replace(/\\/g, '/');
+    const relativePath = path.relative(rootPath, filePath).replace(/\\/g, '/');
 
     if (csprojContent.includes(`Compile Include="${relativePath}"`)) {
         return; // Файл уже добавлен в проект
@@ -54,7 +92,7 @@ function addToCsproj(filePath: string) {
     const newItem = `    <Compile Include="${relativePath}" />\n`;
     const insertPosition = csprojContent.lastIndexOf('</ItemGroup>');
     if (insertPosition === -1) {
-        vscode.window.showErrorMessage('Could not find <ItemGroup> to insert into');
+        vscode.window.showErrorMessage('Not found <ItemGroup> for write');
         return;
     }
 
@@ -67,16 +105,29 @@ function addToCsproj(filePath: string) {
     vscode.window.showInformationMessage(`Added ${relativePath} to ${csprojName}`);
 }
 
-// Функция удаления файла из Assembly-CSharp или Assembly-CSharp-Editor в зависимости от пути
 function removeFromCsproj(filePath: string) {
     const workspaceFolders = vscode.workspace.workspaceFolders;
     if (!workspaceFolders) {
         return;
     }
 
-    const isEditorScript = filePath.includes(`${path.sep}Editor${path.sep}`);
-    const csprojName = isEditorScript ? 'Assembly-CSharp-Editor.csproj' : 'Assembly-CSharp.csproj';
-    const csprojPath = path.join(workspaceFolders[0].uri.fsPath, csprojName);
+    const rootPath = workspaceFolders[0].uri.fsPath;
+    let assemblyName = '';
+    let csprojName = '';
+    let csprojPath = '';
+
+    // Поиск ближайшего .asmdef файла
+    const asmdefPath = findNearestAsmdef(filePath);
+
+    if (asmdefPath) {
+        assemblyName = getAssemblyNameFromAsmdef(asmdefPath);
+        csprojName = `${assemblyName}.csproj`;
+        csprojPath = path.join(rootPath, csprojName);
+    } else {
+        const isEditorScript = filePath.includes(`${path.sep}Editor${path.sep}`);
+        csprojName = isEditorScript ? 'Assembly-CSharp-Editor.csproj' : 'Assembly-CSharp.csproj';
+        csprojPath = path.join(rootPath, csprojName);
+    }
 
     if (!fs.existsSync(csprojPath)) {
         vscode.window.showErrorMessage(`${csprojName} not found`);
@@ -84,46 +135,85 @@ function removeFromCsproj(filePath: string) {
     }
 
     let csprojContent = fs.readFileSync(csprojPath, encoding);
-    const relativePath = path.relative(workspaceFolders[0].uri.fsPath, filePath).replace(/\\/g, '/');
-    const itemToRemove = new RegExp(`\s*<Compile Include="${relativePath}" />\s*\n?`, 'g');
+    const relativePath = path.relative(rootPath, filePath).replace(/\\/g, '/');
+    const itemToRemove = new RegExp(`\\s*<Compile Include="${relativePath}" />\\s*\\n?`, 'g');
     csprojContent = csprojContent.replace(itemToRemove, '');
 
     fs.writeFileSync(csprojPath, csprojContent, encoding);
-    vscode.window.showInformationMessage(`Removed ${relativePath} from ${csprojName}`);
+    vscode.window.showInformationMessage(`Deleted ${relativePath} from ${csprojName}`);
 }
 
-// Функция обновления пути к файлу в Assembly-CSharp или Assembly-CSharp-Editor при переименовании файла
 function renameInCsproj(oldFilePath: string, newFilePath: string) {
     const workspaceFolders = vscode.workspace.workspaceFolders;
-
     if (!workspaceFolders) {
         return;
     }
 
-    const oldIsEditorScript = oldFilePath.includes(`${path.sep}Editor${path.sep}`);
-    const newIsEditorScript = newFilePath.includes(`${path.sep}Editor${path.sep}`);
-    const csprojName = newIsEditorScript ? 'Assembly-CSharp-Editor.csproj' : 'Assembly-CSharp.csproj';
-    const csprojPath = path.join(workspaceFolders[0].uri.fsPath, csprojName);
+    const rootPath = workspaceFolders[0].uri.fsPath;
 
-    if (!fs.existsSync(csprojPath)) {
-        vscode.window.showErrorMessage(`${csprojName} not found`);
-        return;
+    // Поиск .asmdef файлов для старого и нового пути
+    const oldAsmdefPath = findNearestAsmdef(oldFilePath);
+    const newAsmdefPath = findNearestAsmdef(newFilePath);
+
+    let oldAssemblyName = '';
+    let oldCsprojName = '';
+    let oldCsprojPath = '';
+
+    if (oldAsmdefPath) {
+        oldAssemblyName = getAssemblyNameFromAsmdef(oldAsmdefPath);
+        oldCsprojName = `${oldAssemblyName}.csproj`;
+        oldCsprojPath = path.join(rootPath, oldCsprojName);
+    } else {
+        const isEditorScript = oldFilePath.includes(`${path.sep}Editor${path.sep}`);
+        oldCsprojName = isEditorScript ? 'Assembly-CSharp-Editor.csproj' : 'Assembly-CSharp.csproj';
+        oldCsprojPath = path.join(rootPath, oldCsprojName);
     }
 
-    let csprojContent = fs.readFileSync(csprojPath, encoding);
-    const oldRelativePath = path.relative(workspaceFolders[0].uri.fsPath, oldFilePath).replace(/\\/g, '/');
-    const newRelativePath = path.relative(workspaceFolders[0].uri.fsPath, newFilePath).replace(/\\/g, '/');
+    let newAssemblyName = '';
+    let newCsprojName = '';
+    let newCsprojPath = '';
 
-    const itemToUpdate = new RegExp(`(<Compile Include=")${oldRelativePath}(" />)`, 'g');
-    if (!itemToUpdate.test(csprojContent)) {
-        vscode.window.showErrorMessage(`Could not find entry for ${oldRelativePath} in ${csprojName}`);
-        return;
+    if (newAsmdefPath) {
+        newAssemblyName = getAssemblyNameFromAsmdef(newAsmdefPath);
+        newCsprojName = `${newAssemblyName}.csproj`;
+        newCsprojPath = path.join(rootPath, newCsprojName);
+    } else {
+        const isEditorScript = newFilePath.includes(`${path.sep}Editor${path.sep}`);
+        newCsprojName = isEditorScript ? 'Assembly-CSharp-Editor.csproj' : 'Assembly-CSharp.csproj';
+        newCsprojPath = path.join(rootPath, newCsprojName);
     }
 
-    csprojContent = csprojContent.replace(itemToUpdate, `$1${newRelativePath}$2`);
+    const oldRelativePath = path.relative(rootPath, oldFilePath).replace(/\\/g, '/');
+    const newRelativePath = path.relative(rootPath, newFilePath).replace(/\\/g, '/');
 
-    fs.writeFileSync(csprojPath, csprojContent, encoding);
-    vscode.window.showInformationMessage(`Renamed ${oldRelativePath} to ${newRelativePath} in ${csprojName}`);
+    if (oldCsprojPath === newCsprojPath) {
+        // Если файл остаётся в той же сборке, обновляем путь
+        if (!fs.existsSync(oldCsprojPath)) {
+            vscode.window.showErrorMessage(`${oldCsprojName} not found`);
+            return;
+        }
+
+        let csprojContent = fs.readFileSync(oldCsprojPath, encoding);
+
+        const itemToUpdate = new RegExp(`(<Compile Include=")${oldRelativePath}(" />)`, 'g');
+        if (!itemToUpdate.test(csprojContent)) {
+            vscode.window.showErrorMessage(`Unable to find record for ${oldRelativePath} in ${oldCsprojName}`);
+            return;
+        }
+
+        csprojContent = csprojContent.replace(itemToUpdate, `$1${newRelativePath}$2`);
+
+        fs.writeFileSync(oldCsprojPath, csprojContent, encoding);
+        vscode.window.showInformationMessage(`Renamed ${oldRelativePath} to ${newRelativePath} to ${oldCsprojName}`);
+    } else {
+        // Если файл переместился между сборками, удаляем из старой и добавляем в новую
+        removeFromCsproj(oldFilePath);
+        addToCsproj(newFilePath);
+    }
 }
+
+// Функции addToCsproj, removeFromCsproj, renameInCsproj как показано выше
+
+// ...
 
 export function deactivate() { }
