@@ -1,0 +1,20 @@
+{
+  "compilerOptions": {
+    "target": "ES6", // Целевой стандарт ECMAScript
+    "lib": ["ES6"], // Используемые библиотеки (например, стандартные объекты ECMAScript)
+    "module": "commonjs", // Используемая система модулей (VS Code расширения используют CommonJS)
+    "rootDir": "src", // Корневая папка для исходных файлов TypeScript
+    "outDir": "out", // Папка, куда будут выводиться скомпилированные файлы JavaScript
+    "strict": true, // Включение строгой типизации TypeScript
+    "esModuleInterop": true, // Позволяет импортировать модули CommonJS с использованием синтаксиса import
+    "sourceMap": true, // Создание sourcemaps для отладки TypeScript
+    "skipLibCheck": true, // Пропуск проверки типов для библиотек
+    "forceConsistentCasingInFileNames": true // Проверка регистра символов в именах файлов
+  },
+  "include": [
+    "src/**/*.ts" // Включаем все файлы TypeScript в папке src и её подкаталогах
+  ],
+  "exclude": [
+    "node_modules" // Исключаем node_modules, чтобы избежать обработки ненужных файлов
+  ]
+}
