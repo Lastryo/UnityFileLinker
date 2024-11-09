@@ -1,13 +1,19 @@
 {
   "name": "unityfilelinker",
   "displayName": "UnityFileLinker",
-  "description": "Auto Include CSharp is a convenient tool for Unity developers that automatically syncs newly created C# files with your .csproj project.",
+  "description": "Unity File Linker is a handy tool for Unity developers that automatically syncs newly created or moved .cs files with your Unity project without the need for recompilation.",
   "version": "0.0.1",
   "engines": {
     "vscode": "^1.95.0"
   },
   "categories": [
-    "Other"
+    "Other",
+    "Programming Languages"
+  ],
+  "keywords": [
+    "unity",
+    "csharp",
+    "automation"
   ],
   "activationEvents": [
     "onStartupFinished",
@@ -38,6 +44,7 @@
     "@types/mocha": "^10.0.9",
     "@types/node": "20.x",
     "@types/vscode": "^1.95.0",
+    "@types/xml2js": "^0.4.14",
     "@typescript-eslint/eslint-plugin": "^8.10.0",
     "@typescript-eslint/parser": "^8.7.0",
     "@vscode/test-cli": "^0.0.10",
