@@ -3,7 +3,7 @@
   "displayName": "UnityFileLinker",
   "description": "Unity File Linker is a handy tool for C# developers that automatically syncs newly created or moved .cs files with your project without the need for recompilation.",
   "publisher": "lastryo",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "license": "MIT",
   "repository": {
     "type": "git",
