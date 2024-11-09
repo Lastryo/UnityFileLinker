@@ -1,6 +1,6 @@
 # unityfilelinker README
 
-Unity File Linker is a handy tool for Unity developers that automatically syncs newly created or moved .cs files with your Unity project without the need for recompilation.
+Unity File Linker is a handy tool for C# developers that automatically syncs newly created or moved .cs files with your project without the need for recompilation.
 
 ## Features
 
