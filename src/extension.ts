@@ -6,7 +6,7 @@ import { parseStringPromise, Builder } from 'xml2js';
 const encoding = 'utf-8';
 
 export function activate(context: vscode.ExtensionContext) {
-    const watcher = vscode.workspace.createFileSystemWatcher('**/*.cs');
+    const watcher = vscode.workspace.createFileSystemWatcher('**/Assets/**/*.cs');
 
     watcher.onDidCreate((uri: vscode.Uri) => {
         addToCsproj(uri.fsPath);
