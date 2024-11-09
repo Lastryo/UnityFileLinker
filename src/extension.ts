@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import { parseStringPromise, Builder } from 'xml2js';
+import { getLocalizedMessage } from './localization';
 
 const encoding = 'utf-8';
 
@@ -79,7 +80,7 @@ async function addToCsproj(filePath: string) {
     }
 
     if (!fs.existsSync(csprojPath)) {
-        vscode.window.showErrorMessage(`${csprojName} не найден`);
+        vscode.window.showErrorMessage(getLocalizedMessage(`${csprojName} not found`));
         return;
     }
 
@@ -91,7 +92,7 @@ async function addToCsproj(filePath: string) {
     try {
         xmlObj = await parseStringPromise(csprojContent);
     } catch (err: any) {
-        vscode.window.showErrorMessage(`Не удалось разобрать ${csprojName}: ${err.message}`);
+        vscode.window.showErrorMessage(getLocalizedMessage(`Failed to parse ${csprojName}: ${err.message}`));
         return;
     }
 
@@ -148,7 +149,7 @@ async function addToCsproj(filePath: string) {
 
     // Записываем изменения обратно в файл .csproj
     fs.writeFileSync(csprojPath, updatedCsprojContent, encoding);
-    vscode.window.showInformationMessage(`Добавлен ${relativePath} в ${csprojName}`);
+    vscode.window.showInformationMessage(getLocalizedMessage(`Added ${path.basename(filePath)} to ${csprojName}`));
 }
 
 async function removeFromCsproj(filePath: string) {
@@ -176,7 +177,7 @@ async function removeFromCsproj(filePath: string) {
     }
 
     if (!fs.existsSync(csprojPath)) {
-        vscode.window.showErrorMessage(`${csprojName} не найден`);
+        vscode.window.showErrorMessage(getLocalizedMessage(`${csprojName} not found`));
         return;
     }
 
@@ -188,7 +189,7 @@ async function removeFromCsproj(filePath: string) {
     try {
         xmlObj = await parseStringPromise(csprojContent);
     } catch (err: any) {
-        vscode.window.showErrorMessage(`Не удалось разобрать ${csprojName}: ${err.message}`);
+        vscode.window.showErrorMessage(getLocalizedMessage(`Failed to parse ${csprojName}: ${err.message}`));
         return;
     }
 
@@ -225,7 +226,7 @@ async function removeFromCsproj(filePath: string) {
 
     // Записываем изменения обратно в файл .csproj
     fs.writeFileSync(csprojPath, updatedCsprojContent, encoding);
-    vscode.window.showInformationMessage(`Удалён ${relativePath} из ${csprojName}`);
+    vscode.window.showInformationMessage(getLocalizedMessage(`Removed ${path.basename(filePath)} from ${csprojName}`));
 }
 
 async function renameInCsproj(oldFilePath: string, newFilePath: string) {
@@ -243,4 +244,4 @@ async function renameInCsproj(oldFilePath: string, newFilePath: string) {
     await addToCsproj(newFilePath);
 }
 
-export function deactivate() {}
+export function deactivate() { }
