@@ -220,10 +220,21 @@ function findNearestAsmdef(filePath: string): string | null {
 }
 
 // Функция для получения имени сборки из .asmdef файла
-function getAssemblyNameFromAsmdef(asmdefPath: string): string {
-    const content = fs.readFileSync(asmdefPath, encoding);
-    const asmdefJson = JSON.parse(content);
-    return asmdefJson.name;
+function getAssemblyNameFromAsmdef(asmdefPath: string): string | null {
+    try {
+        const content = fs.readFileSync(asmdefPath, encoding);
+        const asmdefJson = JSON.parse(content);
+
+        if (typeof asmdefJson.name === 'string' && asmdefJson.name.trim().length > 0) {
+            return asmdefJson.name;
+        }
+
+        vscode.window.showWarningMessage(getLocalizedMessage(`${path.basename(asmdefPath)} does not contain a valid assembly name`));
+    } catch (err: any) {
+        vscode.window.showWarningMessage(getLocalizedMessage(`Failed to read ${path.basename(asmdefPath)}: ${err.message}`));
+    }
+
+    return null;
 }
 
 function getDefaultCsprojInfo(rootPath: string, filePath: string): { csprojName: string; csprojPath: string } {
@@ -237,8 +248,10 @@ function getCsprojInfoForFile(rootPath: string, filePath: string): { csprojName:
 
     if (asmdefPath) {
         const assemblyName = getAssemblyNameFromAsmdef(asmdefPath);
-        const csprojName = `${assemblyName}.csproj`;
-        return { csprojName, csprojPath: path.join(rootPath, csprojName) };
+        if (assemblyName) {
+            const csprojName = `${assemblyName}.csproj`;
+            return { csprojName, csprojPath: path.join(rootPath, csprojName) };
+        }
     }
 
     return getDefaultCsprojInfo(rootPath, filePath);
