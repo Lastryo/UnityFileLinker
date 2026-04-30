@@ -7,6 +7,16 @@ const encoding = 'utf-8';
 let csprojUpdateQueue = Promise.resolve();
 type CsprojMutationResult = 'changed' | 'unchanged';
 
+type CsprojInfo = {
+    csprojName: string;
+    csprojPath: string;
+};
+
+type CsprojContentCacheEntry = CsprojInfo & {
+    originalContent: string;
+    content: string;
+};
+
 export function activate(context: vscode.ExtensionContext) {
     const scriptWatcher = vscode.workspace.createFileSystemWatcher('**/Assets/**/*.cs');
     const asmdefWatcher = vscode.workspace.createFileSystemWatcher('**/Assets/**/*.asmdef');
@@ -277,6 +287,36 @@ function findCsFilesInDirectory(directoryPath: string): string[] {
     return csFiles;
 }
 
+function getAllCsprojInfos(rootPath: string): CsprojInfo[] {
+    return fs.readdirSync(rootPath)
+        .filter(fileName => fileName.endsWith('.csproj'))
+        .map(fileName => ({ csprojName: fileName, csprojPath: path.join(rootPath, fileName) }));
+}
+
+function createCsprojContentCache(csprojInfos: CsprojInfo[]): Map<string, CsprojContentCacheEntry> {
+    const cache = new Map<string, CsprojContentCacheEntry>();
+
+    for (const { csprojName, csprojPath } of csprojInfos) {
+        if (!fs.existsSync(csprojPath)) {
+            continue;
+        }
+
+        const content = fs.readFileSync(csprojPath, encoding);
+        cache.set(normalizeFileSystemPath(csprojPath), {
+            csprojName,
+            csprojPath,
+            originalContent: content,
+            content,
+        });
+    }
+
+    return cache;
+}
+
+function getCsprojCacheEntry(cache: Map<string, CsprojContentCacheEntry>, csprojPath: string): CsprojContentCacheEntry | undefined {
+    return cache.get(normalizeFileSystemPath(csprojPath));
+}
+
 async function syncCsprojForAsmdefScope(asmdefPath: string) {
     const workspaceFolders = vscode.workspace.workspaceFolders;
     if (!workspaceFolders) {
@@ -290,19 +330,63 @@ async function syncCsprojForAsmdefScope(asmdefPath: string) {
         return;
     }
 
+    const csprojCache = createCsprojContentCache(getAllCsprojInfos(rootPath));
+    const missingCsprojNames = new Set<string>();
     let updatedScripts = 0;
     let unchangedScripts = 0;
 
     for (const scriptFile of scriptFiles) {
-        const { csprojPath } = getCsprojInfoForFile(rootPath, scriptFile);
-        const removedEntries = await removeExactScriptPathFromStaleCsproj(scriptFile, csprojPath);
-        const addResult = await addToCsproj(scriptFile, false);
+        const relativePath = toCsprojIncludePath(rootPath, scriptFile);
+        const targetCsprojInfo = getCsprojInfoForFile(rootPath, scriptFile);
+        const targetEntry = getCsprojCacheEntry(csprojCache, targetCsprojInfo.csprojPath);
+        let removedEntries = 0;
+        let addResult: CsprojMutationResult = 'unchanged';
+
+        for (const entry of csprojCache.values()) {
+            const includeCount = countCompileIncludes(entry.content, relativePath);
+
+            if (includeCount === 0) {
+                continue;
+            }
+
+            if (isSameFileSystemPath(entry.csprojPath, targetCsprojInfo.csprojPath) && includeCount === 1) {
+                continue;
+            }
+
+            const updatedContent = removeCompileInclude(entry.content, relativePath);
+            if (!updatedContent) {
+                continue;
+            }
+
+            entry.content = updatedContent;
+            removedEntries += includeCount;
+        }
+
+        if (targetEntry) {
+            const updatedContent = addCompileInclude(targetEntry.content, relativePath);
+            if (updatedContent) {
+                targetEntry.content = updatedContent;
+                addResult = 'changed';
+            }
+        } else {
+            missingCsprojNames.add(targetCsprojInfo.csprojName);
+        }
 
         if (removedEntries > 0 || addResult === 'changed') {
             updatedScripts++;
         } else {
             unchangedScripts++;
         }
+    }
+
+    for (const entry of csprojCache.values()) {
+        if (entry.content !== entry.originalContent) {
+            fs.writeFileSync(entry.csprojPath, entry.content, encoding);
+        }
+    }
+
+    for (const csprojName of missingCsprojNames) {
+        vscode.window.showErrorMessage(getLocalizedMessage(`${csprojName} not found`));
     }
 
     vscode.window.showInformationMessage(getLocalizedMessage(`Resynced ${scriptFiles.length} scripts for ${path.basename(asmdefPath)}: ${updatedScripts} updated, ${unchangedScripts} unchanged`));
@@ -349,13 +433,13 @@ function getAssemblyNameFromAsmdef(asmdefPath: string): string | null {
     return null;
 }
 
-function getDefaultCsprojInfo(rootPath: string, filePath: string): { csprojName: string; csprojPath: string } {
+function getDefaultCsprojInfo(rootPath: string, filePath: string): CsprojInfo {
     const isEditorScript = filePath.includes(`${path.sep}Editor${path.sep}`);
     const csprojName = isEditorScript ? 'Assembly-CSharp-Editor.csproj' : 'Assembly-CSharp.csproj';
     return { csprojName, csprojPath: path.join(rootPath, csprojName) };
 }
 
-function getCsprojInfoForFile(rootPath: string, filePath: string): { csprojName: string; csprojPath: string } {
+function getCsprojInfoForFile(rootPath: string, filePath: string): CsprojInfo {
     const asmdefPath = findNearestAsmdef(filePath);
 
     if (asmdefPath) {
@@ -369,19 +453,17 @@ function getCsprojInfoForFile(rootPath: string, filePath: string): { csprojName:
     return getDefaultCsprojInfo(rootPath, filePath);
 }
 
-function getRemovalCsprojCandidates(rootPath: string, filePath: string): { csprojName: string; csprojPath: string }[] {
-    const candidates = new Map<string, { csprojName: string; csprojPath: string }>();
+function getRemovalCsprojCandidates(rootPath: string, filePath: string): CsprojInfo[] {
+    const candidates = new Map<string, CsprojInfo>();
 
-    const addCandidate = (candidate: { csprojName: string; csprojPath: string }) => {
+    const addCandidate = (candidate: CsprojInfo) => {
         candidates.set(candidate.csprojPath, candidate);
     };
 
     addCandidate(getCsprojInfoForFile(rootPath, filePath));
 
-    for (const fileName of fs.readdirSync(rootPath)) {
-        if (fileName.endsWith('.csproj')) {
-            addCandidate({ csprojName: fileName, csprojPath: path.join(rootPath, fileName) });
-        }
+    for (const candidate of getAllCsprojInfos(rootPath)) {
+        addCandidate(candidate);
     }
 
     return Array.from(candidates.values());
@@ -450,46 +532,6 @@ async function removeFromCsproj(filePath: string, notify = true): Promise<Csproj
     }
 
     return 'unchanged';
-}
-
-async function removeExactScriptPathFromStaleCsproj(filePath: string, targetCsprojPath: string): Promise<number> {
-    const workspaceFolders = vscode.workspace.workspaceFolders;
-    if (!workspaceFolders) {
-        return 0;
-    }
-
-    const rootPath = workspaceFolders[0].uri.fsPath;
-    const relativePath = toCsprojIncludePath(rootPath, filePath);
-    const csprojCandidates = getRemovalCsprojCandidates(rootPath, filePath);
-    let removedEntries = 0;
-
-    for (const { csprojPath } of csprojCandidates) {
-        if (!fs.existsSync(csprojPath)) {
-            continue;
-        }
-
-        const csprojContent = fs.readFileSync(csprojPath, encoding);
-        const includeCount = countCompileIncludes(csprojContent, relativePath);
-
-        if (includeCount === 0) {
-            continue;
-        }
-
-        if (isSameFileSystemPath(csprojPath, targetCsprojPath) && includeCount === 1) {
-            continue;
-        }
-
-        const updatedCsprojContent = removeCompileInclude(csprojContent, relativePath);
-
-        if (!updatedCsprojContent) {
-            continue;
-        }
-
-        fs.writeFileSync(csprojPath, updatedCsprojContent, encoding);
-        removedEntries += includeCount;
-    }
-
-    return removedEntries;
 }
 
 async function renameInCsproj(oldFilePath: string, newFilePath: string) {
