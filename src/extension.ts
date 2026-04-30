@@ -5,16 +5,17 @@ import { parseStringPromise, Builder } from 'xml2js';
 import { getLocalizedMessage } from './localization';
 
 const encoding = 'utf-8';
+let csprojUpdateQueue = Promise.resolve();
 
 export function activate(context: vscode.ExtensionContext) {
     const watcher = vscode.workspace.createFileSystemWatcher('**/Assets/**/*.cs');
 
     watcher.onDidCreate((uri: vscode.Uri) => {
-        addToCsproj(uri.fsPath);
+        enqueueCsprojUpdate(() => addToCsproj(uri.fsPath));
     });
 
     watcher.onDidDelete((uri: vscode.Uri) => {
-        removeFromCsproj(uri.fsPath);
+        enqueueCsprojUpdate(() => removeFromCsproj(uri.fsPath));
     });
 
     const renameDisposable = vscode.workspace.onDidRenameFiles((event) => {
@@ -32,22 +33,34 @@ export function activate(context: vscode.ExtensionContext) {
             const newIsAssetScript = isAssetScriptFile(newFilePath, rootPath);
 
             if (oldIsAssetScript && newIsAssetScript) {
-                renameInCsproj(oldFilePath, newFilePath);
+                enqueueCsprojUpdate(() => renameInCsproj(oldFilePath, newFilePath));
                 return;
             }
 
             if (oldIsAssetScript) {
-                removeFromCsproj(oldFilePath);
+                enqueueCsprojUpdate(() => removeFromCsproj(oldFilePath));
                 return;
             }
 
             if (newIsAssetScript) {
-                addToCsproj(newFilePath);
+                enqueueCsprojUpdate(() => addToCsproj(newFilePath));
             }
         });
     });
 
     context.subscriptions.push(watcher, renameDisposable);
+}
+
+function enqueueCsprojUpdate(operation: () => Promise<void>): void {
+    csprojUpdateQueue = csprojUpdateQueue
+        .catch(() => undefined)
+        .then(async () => {
+            try {
+                await operation();
+            } catch (err: any) {
+                vscode.window.showErrorMessage(getLocalizedMessage(`Failed to update csproj: ${err.message}`));
+            }
+        });
 }
 
 function isInsideWorkspacePath(filePath: string, rootPath: string): boolean {
@@ -285,13 +298,6 @@ async function removeFromCsproj(filePath: string) {
 }
 
 async function renameInCsproj(oldFilePath: string, newFilePath: string) {
-    const workspaceFolders = vscode.workspace.workspaceFolders;
-    if (!workspaceFolders) {
-        return;
-    }
-
-    const rootPath = workspaceFolders[0].uri.fsPath;
-
     // Удаляем старый файл из проекта
     await removeFromCsproj(oldFilePath);
 
