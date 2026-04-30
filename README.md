@@ -94,10 +94,6 @@ UnityFileLinker does not generate `.csproj` files by itself. It updates project 
 
 If Unity has not generated a project file for a newly created or renamed `.asmdef` yet, the extension may show a warning that the corresponding `.csproj` was not found. In that case, regenerate project files from Unity and try again.
 
-## Repository
-
-https://github.com/Lastryo/UnityFileLinker
-
 ## License
 
 MIT
