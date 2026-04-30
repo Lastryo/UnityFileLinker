@@ -1,7 +1,6 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
-import { parseStringPromise, Builder } from 'xml2js';
 import { getLocalizedMessage } from './localization';
 
 const encoding = 'utf-8';
@@ -83,11 +82,110 @@ function toCsprojIncludePath(rootPath: string, filePath: string): string {
 }
 
 function normalizeCsprojIncludePath(includePath: string): string {
-    return includePath.replace(/[\\/]+/g, '\\').toLowerCase();
+    return decodeXmlAttribute(includePath).replace(/[\\/]+/g, '\\').toLowerCase();
 }
 
 function isSameCsprojIncludePath(firstPath: string, secondPath: string): boolean {
     return normalizeCsprojIncludePath(firstPath) === normalizeCsprojIncludePath(secondPath);
+}
+
+function decodeXmlAttribute(value: string): string {
+    return value
+        .replace(/&quot;/g, '"')
+        .replace(/&apos;/g, "'")
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&amp;/g, '&');
+}
+
+function escapeXmlAttribute(value: string): string {
+    return value
+        .replace(/&/g, '&amp;')
+        .replace(/"/g, '&quot;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+}
+
+function getLineEnding(content: string): string {
+    return content.includes('\r\n') ? '\r\n' : '\n';
+}
+
+function getCompileIncludeMatches(csprojContent: string): RegExpMatchArray[] {
+    return Array.from(csprojContent.matchAll(/<Compile\b[^>]*\bInclude=(['"])(.*?)\1[^>]*(?:\/>|>[\s\S]*?<\/Compile>)/g));
+}
+
+function hasCompileInclude(csprojContent: string, relativePath: string): boolean {
+    return getCompileIncludeMatches(csprojContent).some(match => isSameCsprojIncludePath(match[2], relativePath));
+}
+
+function inferCompileIndent(itemGroupContent: string, itemGroupIndent: string): string {
+    const compileLineMatch = itemGroupContent.match(/\r?\n([ \t]*)<Compile\b/);
+    if (compileLineMatch) {
+        return compileLineMatch[1];
+    }
+
+    const childLineMatch = itemGroupContent.match(/\r?\n([ \t]*)<[^/!][^>]*>/);
+    if (childLineMatch) {
+        return childLineMatch[1];
+    }
+
+    return `${itemGroupIndent}  `;
+}
+
+function addCompileInclude(csprojContent: string, relativePath: string): string | null {
+    if (hasCompileInclude(csprojContent, relativePath)) {
+        return null;
+    }
+
+    const lineEnding = getLineEnding(csprojContent);
+    const escapedRelativePath = escapeXmlAttribute(relativePath);
+    const itemGroupRegex = /(^[ \t]*)<ItemGroup\b[^>]*>[\s\S]*?<\/ItemGroup>/gm;
+    const itemGroups = Array.from(csprojContent.matchAll(itemGroupRegex));
+
+    let targetItemGroup: RegExpMatchArray | undefined;
+    const analyzerIndex = itemGroups.findIndex(match => /<Analyzer\b/.test(match[0]));
+    if (analyzerIndex !== -1 && analyzerIndex + 1 < itemGroups.length) {
+        targetItemGroup = itemGroups[analyzerIndex + 1];
+    } else {
+        targetItemGroup = itemGroups.find(match => /<Compile\b/.test(match[0])) ?? itemGroups[0];
+    }
+
+    if (targetItemGroup && targetItemGroup.index !== undefined) {
+        const itemGroupContent = targetItemGroup[0];
+        const itemGroupIndent = targetItemGroup[1];
+        const compileIndent = inferCompileIndent(itemGroupContent, itemGroupIndent);
+        const closingTagIndex = itemGroupContent.lastIndexOf('</ItemGroup>');
+        const compileLine = `${compileIndent}<Compile Include="${escapedRelativePath}" />${lineEnding}`;
+        const updatedItemGroup = `${itemGroupContent.slice(0, closingTagIndex)}${compileLine}${itemGroupContent.slice(closingTagIndex)}`;
+
+        return `${csprojContent.slice(0, targetItemGroup.index)}${updatedItemGroup}${csprojContent.slice(targetItemGroup.index + itemGroupContent.length)}`;
+    }
+
+    const projectCloseMatch = csprojContent.match(/(^[ \t]*)<\/Project>/m);
+    if (!projectCloseMatch || projectCloseMatch.index === undefined) {
+        throw new Error('Project closing tag not found');
+    }
+
+    const projectIndent = projectCloseMatch[1];
+    const itemGroupIndent = `${projectIndent}  `;
+    const compileIndent = `${itemGroupIndent}  `;
+    const newItemGroup = `${itemGroupIndent}<ItemGroup>${lineEnding}${compileIndent}<Compile Include="${escapedRelativePath}" />${lineEnding}${itemGroupIndent}</ItemGroup>${lineEnding}`;
+
+    return `${csprojContent.slice(0, projectCloseMatch.index)}${newItemGroup}${csprojContent.slice(projectCloseMatch.index)}`;
+}
+
+function removeCompileInclude(csprojContent: string, relativePath: string): string | null {
+    let removed = false;
+    const updatedContent = csprojContent.replace(/(^[ \t]*<Compile\b[^>]*\bInclude=(['"])(.*?)\2[^>]*(?:\/>|>[\s\S]*?<\/Compile>)[ \t]*(?:\r?\n|$))/gm, (match, _line, _quote, includePath) => {
+        if (isSameCsprojIncludePath(includePath, relativePath)) {
+            removed = true;
+            return '';
+        }
+
+        return match;
+    });
+
+    return removed ? updatedContent : null;
 }
 
 function isDirectory(filePath: string): boolean {
@@ -180,66 +278,12 @@ async function addToCsproj(filePath: string) {
 
     const csprojContent = fs.readFileSync(csprojPath, encoding);
     const relativePath = toCsprojIncludePath(rootPath, filePath);
+    const updatedCsprojContent = addCompileInclude(csprojContent, relativePath);
 
-    // Парсинг XML-содержимого
-    let xmlObj;
-    try {
-        xmlObj = await parseStringPromise(csprojContent);
-    } catch (err: any) {
-        vscode.window.showErrorMessage(getLocalizedMessage(`Failed to parse ${csprojName}: ${err.message}`));
+    if (!updatedCsprojContent) {
+        // Файл уже добавлен
         return;
     }
-
-    // Поиск ItemGroup, который идёт сразу после Analyzers
-    let itemGroups = xmlObj.Project.ItemGroup;
-    if (!itemGroups) {
-        itemGroups = [];
-        xmlObj.Project.ItemGroup = itemGroups;
-    }
-
-    let insertIndex = -1;
-    for (let i = 0; i < itemGroups.length; i++) {
-        const itemGroup = itemGroups[i];
-
-        // Проверяем, содержит ли этот ItemGroup Analyzers
-        if (itemGroup.Analyzer) {
-            // Следующий ItemGroup — это место для вставки
-            insertIndex = i + 1;
-            break;
-        }
-    }
-
-    // Если Analyzers не найдены или нет следующего ItemGroup, создаём новый
-    if (insertIndex === -1 || insertIndex >= itemGroups.length) {
-        // Создаём новый ItemGroup в конце
-        itemGroups.push({});
-        insertIndex = itemGroups.length - 1;
-    }
-
-    // Подготавливаем элемент Compile
-    const compileItem = { $: { Include: relativePath } };
-
-    // Проверяем, есть ли файл уже в проекте
-    for (const ig of itemGroups) {
-        if (ig.Compile) {
-            for (const compile of ig.Compile) {
-                if (compile.$ && isSameCsprojIncludePath(compile.$.Include, relativePath)) {
-                    // Файл уже добавлен
-                    return;
-                }
-            }
-        }
-    }
-
-    // Вставляем элемент Compile в нужный ItemGroup
-    if (!itemGroups[insertIndex].Compile) {
-        itemGroups[insertIndex].Compile = [];
-    }
-    itemGroups[insertIndex].Compile.push(compileItem);
-
-    // Сборка XML обратно в строку
-    const builder = new Builder({ headless: true });
-    const updatedCsprojContent = builder.buildObject(xmlObj);
 
     // Записываем изменения обратно в файл .csproj
     fs.writeFileSync(csprojPath, updatedCsprojContent, encoding);
@@ -262,45 +306,11 @@ async function removeFromCsproj(filePath: string) {
         }
 
         const csprojContent = fs.readFileSync(csprojPath, encoding);
+        const updatedCsprojContent = removeCompileInclude(csprojContent, relativePath);
 
-        // Парсинг XML-содержимого
-        let xmlObj;
-        try {
-            xmlObj = await parseStringPromise(csprojContent);
-        } catch (err: any) {
-            vscode.window.showErrorMessage(getLocalizedMessage(`Failed to parse ${csprojName}: ${err.message}`));
+        if (!updatedCsprojContent) {
             continue;
         }
-
-        let itemGroups = xmlObj.Project.ItemGroup;
-        if (!itemGroups) {
-            continue;
-        }
-
-        let found = false;
-
-        // Ищем и удаляем элемент Compile с указанным файлом
-        for (const itemGroup of itemGroups) {
-            if (itemGroup.Compile) {
-                const newCompileList = itemGroup.Compile.filter((compile: any) => {
-                    return !compile.$ || !isSameCsprojIncludePath(compile.$.Include, relativePath);
-                });
-
-                if (newCompileList.length !== itemGroup.Compile.length) {
-                    itemGroup.Compile = newCompileList;
-                    found = true;
-                    break;
-                }
-            }
-        }
-
-        if (!found) {
-            continue;
-        }
-
-        // Сборка XML обратно в строку
-        const builder = new Builder({ headless: true });
-        const updatedCsprojContent = builder.buildObject(xmlObj);
 
         // Записываем изменения обратно в файл .csproj
         fs.writeFileSync(csprojPath, updatedCsprojContent, encoding);
