@@ -218,9 +218,13 @@ function addCompileInclude(csprojContent: string, relativePath: string): string 
         const itemGroupContent = targetItemGroup[0];
         const itemGroupIndent = targetItemGroup[1];
         const compileIndent = inferCompileIndent(itemGroupContent, itemGroupIndent);
-        const closingTagIndex = itemGroupContent.lastIndexOf('</ItemGroup>');
         const compileLine = `${compileIndent}<Compile Include="${escapedRelativePath}" />${lineEnding}`;
-        const updatedItemGroup = `${itemGroupContent.slice(0, closingTagIndex)}${compileLine}${itemGroupContent.slice(closingTagIndex)}`;
+        const compileLineRegex = /^[ \t]*<Compile\b[^>]*\bInclude=(['"])(.*?)\1[^>]*(?:\/>|>[\s\S]*?<\/Compile>)[ \t]*(?:\r?\n|$)/gm;
+        const compileMatches = Array.from(itemGroupContent.matchAll(compileLineRegex));
+        const insertIndex = compileMatches.length > 0 && compileMatches[compileMatches.length - 1].index !== undefined
+            ? compileMatches[compileMatches.length - 1].index! + compileMatches[compileMatches.length - 1][0].length
+            : itemGroupContent.lastIndexOf('</ItemGroup>');
+        const updatedItemGroup = `${itemGroupContent.slice(0, insertIndex)}${compileLine}${itemGroupContent.slice(insertIndex)}`;
 
         return `${csprojContent.slice(0, targetItemGroup.index)}${updatedItemGroup}${csprojContent.slice(targetItemGroup.index + itemGroupContent.length)}`;
     }
