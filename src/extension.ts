@@ -17,13 +17,47 @@ export function activate(context: vscode.ExtensionContext) {
         removeFromCsproj(uri.fsPath);
     });
 
-    vscode.workspace.onDidRenameFiles((event) => {
+    const renameDisposable = vscode.workspace.onDidRenameFiles((event) => {
+        const workspaceFolders = vscode.workspace.workspaceFolders;
+        if (!workspaceFolders) {
+            return;
+        }
+
+        const rootPath = workspaceFolders[0].uri.fsPath;
+
         event.files.forEach((file) => {
-            renameInCsproj(file.oldUri.fsPath, file.newUri.fsPath);
+            const oldFilePath = file.oldUri.fsPath;
+            const newFilePath = file.newUri.fsPath;
+            const oldIsAssetScript = isAssetScriptFile(oldFilePath, rootPath);
+            const newIsAssetScript = isAssetScriptFile(newFilePath, rootPath);
+
+            if (oldIsAssetScript && newIsAssetScript) {
+                renameInCsproj(oldFilePath, newFilePath);
+                return;
+            }
+
+            if (oldIsAssetScript) {
+                removeFromCsproj(oldFilePath);
+                return;
+            }
+
+            if (newIsAssetScript) {
+                addToCsproj(newFilePath);
+            }
         });
     });
 
-    context.subscriptions.push(watcher);
+    context.subscriptions.push(watcher, renameDisposable);
+}
+
+function isAssetScriptFile(filePath: string, rootPath: string): boolean {
+    const relativePath = path.relative(rootPath, filePath);
+    if (relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
+        return false;
+    }
+
+    const firstPathSegment = relativePath.split(path.sep)[0];
+    return firstPathSegment === 'Assets' && path.extname(filePath).toLowerCase() === '.cs';
 }
 
 // Функция для поиска ближайшего .asmdef файла
