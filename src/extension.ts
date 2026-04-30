@@ -50,14 +50,27 @@ export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(watcher, renameDisposable);
 }
 
-function isAssetScriptFile(filePath: string, rootPath: string): boolean {
+function isInsideWorkspacePath(filePath: string, rootPath: string): boolean {
     const relativePath = path.relative(rootPath, filePath);
-    if (relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
+    return relativePath === '' || (!relativePath.startsWith('..') && !path.isAbsolute(relativePath));
+}
+
+function isAssetScriptFile(filePath: string, rootPath: string): boolean {
+    if (!isInsideWorkspacePath(filePath, rootPath)) {
         return false;
     }
 
+    const relativePath = path.relative(rootPath, filePath);
     const firstPathSegment = relativePath.split(path.sep)[0];
     return firstPathSegment === 'Assets' && path.extname(filePath).toLowerCase() === '.cs';
+}
+
+function isDirectory(filePath: string): boolean {
+    try {
+        return fs.statSync(filePath).isDirectory();
+    } catch {
+        return false;
+    }
 }
 
 // Функция для поиска ближайшего .asmdef файла
@@ -65,11 +78,14 @@ function findNearestAsmdef(filePath: string): string | null {
     let dir = path.dirname(filePath);
     const root = vscode.workspace.workspaceFolders![0].uri.fsPath;
 
-    while (dir.startsWith(root)) {
-        const asmdefFiles = fs.readdirSync(dir).filter(file => file.endsWith('.asmdef'));
-        if (asmdefFiles.length > 0) {
-            return path.join(dir, asmdefFiles[0]);
+    while (isInsideWorkspacePath(dir, root)) {
+        if (isDirectory(dir)) {
+            const asmdefFiles = fs.readdirSync(dir).filter(file => file.endsWith('.asmdef'));
+            if (asmdefFiles.length > 0) {
+                return path.join(dir, asmdefFiles[0]);
+            }
         }
+
         const parentDir = path.dirname(dir);
         if (parentDir === dir) {
             break;
@@ -87,6 +103,42 @@ function getAssemblyNameFromAsmdef(asmdefPath: string): string {
     return asmdefJson.name;
 }
 
+function getDefaultCsprojInfo(rootPath: string, filePath: string): { csprojName: string; csprojPath: string } {
+    const isEditorScript = filePath.includes(`${path.sep}Editor${path.sep}`);
+    const csprojName = isEditorScript ? 'Assembly-CSharp-Editor.csproj' : 'Assembly-CSharp.csproj';
+    return { csprojName, csprojPath: path.join(rootPath, csprojName) };
+}
+
+function getCsprojInfoForFile(rootPath: string, filePath: string): { csprojName: string; csprojPath: string } {
+    const asmdefPath = findNearestAsmdef(filePath);
+
+    if (asmdefPath) {
+        const assemblyName = getAssemblyNameFromAsmdef(asmdefPath);
+        const csprojName = `${assemblyName}.csproj`;
+        return { csprojName, csprojPath: path.join(rootPath, csprojName) };
+    }
+
+    return getDefaultCsprojInfo(rootPath, filePath);
+}
+
+function getRemovalCsprojCandidates(rootPath: string, filePath: string): { csprojName: string; csprojPath: string }[] {
+    const candidates = new Map<string, { csprojName: string; csprojPath: string }>();
+
+    const addCandidate = (candidate: { csprojName: string; csprojPath: string }) => {
+        candidates.set(candidate.csprojPath, candidate);
+    };
+
+    addCandidate(getCsprojInfoForFile(rootPath, filePath));
+
+    for (const fileName of fs.readdirSync(rootPath)) {
+        if (fileName.endsWith('.csproj')) {
+            addCandidate({ csprojName: fileName, csprojPath: path.join(rootPath, fileName) });
+        }
+    }
+
+    return Array.from(candidates.values());
+}
+
 async function addToCsproj(filePath: string) {
     const workspaceFolders = vscode.workspace.workspaceFolders;
     if (!workspaceFolders) {
@@ -94,24 +146,7 @@ async function addToCsproj(filePath: string) {
     }
 
     const rootPath = workspaceFolders[0].uri.fsPath;
-    let assemblyName = '';
-    let csprojName = '';
-    let csprojPath = '';
-
-    // Поиск ближайшего .asmdef файла
-    const asmdefPath = findNearestAsmdef(filePath);
-
-    if (asmdefPath) {
-        // Получаем имя сборки из .asmdef файла
-        assemblyName = getAssemblyNameFromAsmdef(asmdefPath);
-        csprojName = `${assemblyName}.csproj`;
-        csprojPath = path.join(rootPath, csprojName);
-    } else {
-        // Используем стандартные сборки Unity
-        const isEditorScript = filePath.includes(`${path.sep}Editor${path.sep}`);
-        csprojName = isEditorScript ? 'Assembly-CSharp-Editor.csproj' : 'Assembly-CSharp.csproj';
-        csprojPath = path.join(rootPath, csprojName);
-    }
+    const { csprojName, csprojPath } = getCsprojInfoForFile(rootPath, filePath);
 
     if (!fs.existsSync(csprojPath)) {
         vscode.window.showErrorMessage(getLocalizedMessage(`${csprojName} not found`));
@@ -193,74 +228,60 @@ async function removeFromCsproj(filePath: string) {
     }
 
     const rootPath = workspaceFolders[0].uri.fsPath;
-    let assemblyName = '';
-    let csprojName = '';
-    let csprojPath = '';
-
-    // Поиск ближайшего .asmdef файла
-    const asmdefPath = findNearestAsmdef(filePath);
-
-    if (asmdefPath) {
-        assemblyName = getAssemblyNameFromAsmdef(asmdefPath);
-        csprojName = `${assemblyName}.csproj`;
-        csprojPath = path.join(rootPath, csprojName);
-    } else {
-        const isEditorScript = filePath.includes(`${path.sep}Editor${path.sep}`);
-        csprojName = isEditorScript ? 'Assembly-CSharp-Editor.csproj' : 'Assembly-CSharp.csproj';
-        csprojPath = path.join(rootPath, csprojName);
-    }
-
-    if (!fs.existsSync(csprojPath)) {
-        vscode.window.showErrorMessage(getLocalizedMessage(`${csprojName} not found`));
-        return;
-    }
-
-    const csprojContent = fs.readFileSync(csprojPath, encoding);
     const relativePath = path.relative(rootPath, filePath).replace(/\//g, '\\');
+    const csprojCandidates = getRemovalCsprojCandidates(rootPath, filePath);
 
-    // Парсинг XML-содержимого
-    let xmlObj;
-    try {
-        xmlObj = await parseStringPromise(csprojContent);
-    } catch (err: any) {
-        vscode.window.showErrorMessage(getLocalizedMessage(`Failed to parse ${csprojName}: ${err.message}`));
-        return;
-    }
+    for (const { csprojName, csprojPath } of csprojCandidates) {
+        if (!fs.existsSync(csprojPath)) {
+            continue;
+        }
 
-    let itemGroups = xmlObj.Project.ItemGroup;
-    if (!itemGroups) {
-        return;
-    }
+        const csprojContent = fs.readFileSync(csprojPath, encoding);
 
-    let found = false;
+        // Парсинг XML-содержимого
+        let xmlObj;
+        try {
+            xmlObj = await parseStringPromise(csprojContent);
+        } catch (err: any) {
+            vscode.window.showErrorMessage(getLocalizedMessage(`Failed to parse ${csprojName}: ${err.message}`));
+            continue;
+        }
 
-    // Ищем и удаляем элемент Compile с указанным файлом
-    for (const itemGroup of itemGroups) {
-        if (itemGroup.Compile) {
-            const newCompileList = itemGroup.Compile.filter((compile: any) => {
-                return compile.$.Include !== relativePath;
-            });
+        let itemGroups = xmlObj.Project.ItemGroup;
+        if (!itemGroups) {
+            continue;
+        }
 
-            if (newCompileList.length !== itemGroup.Compile.length) {
-                itemGroup.Compile = newCompileList;
-                found = true;
-                break;
+        let found = false;
+
+        // Ищем и удаляем элемент Compile с указанным файлом
+        for (const itemGroup of itemGroups) {
+            if (itemGroup.Compile) {
+                const newCompileList = itemGroup.Compile.filter((compile: any) => {
+                    return compile.$.Include !== relativePath;
+                });
+
+                if (newCompileList.length !== itemGroup.Compile.length) {
+                    itemGroup.Compile = newCompileList;
+                    found = true;
+                    break;
+                }
             }
         }
-    }
 
-    if (!found) {
-        // Файл не найден в проекте
+        if (!found) {
+            continue;
+        }
+
+        // Сборка XML обратно в строку
+        const builder = new Builder({ headless: true });
+        const updatedCsprojContent = builder.buildObject(xmlObj);
+
+        // Записываем изменения обратно в файл .csproj
+        fs.writeFileSync(csprojPath, updatedCsprojContent, encoding);
+        vscode.window.showInformationMessage(getLocalizedMessage(`Removed ${path.basename(filePath)} from ${csprojName}`));
         return;
     }
-
-    // Сборка XML обратно в строку
-    const builder = new Builder({ headless: true });
-    const updatedCsprojContent = builder.buildObject(xmlObj);
-
-    // Записываем изменения обратно в файл .csproj
-    fs.writeFileSync(csprojPath, updatedCsprojContent, encoding);
-    vscode.window.showInformationMessage(getLocalizedMessage(`Removed ${path.basename(filePath)} from ${csprojName}`));
 }
 
 async function renameInCsproj(oldFilePath: string, newFilePath: string) {
