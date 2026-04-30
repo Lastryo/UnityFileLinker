@@ -7,14 +7,27 @@ const encoding = 'utf-8';
 let csprojUpdateQueue = Promise.resolve();
 
 export function activate(context: vscode.ExtensionContext) {
-    const watcher = vscode.workspace.createFileSystemWatcher('**/Assets/**/*.cs');
+    const scriptWatcher = vscode.workspace.createFileSystemWatcher('**/Assets/**/*.cs');
+    const asmdefWatcher = vscode.workspace.createFileSystemWatcher('**/Assets/**/*.asmdef');
 
-    watcher.onDidCreate((uri: vscode.Uri) => {
+    scriptWatcher.onDidCreate((uri: vscode.Uri) => {
         enqueueCsprojUpdate(() => addToCsproj(uri.fsPath));
     });
 
-    watcher.onDidDelete((uri: vscode.Uri) => {
+    scriptWatcher.onDidDelete((uri: vscode.Uri) => {
         enqueueCsprojUpdate(() => removeFromCsproj(uri.fsPath));
+    });
+
+    asmdefWatcher.onDidCreate((uri: vscode.Uri) => {
+        enqueueCsprojUpdate(() => syncCsprojForAsmdefScope(uri.fsPath));
+    });
+
+    asmdefWatcher.onDidChange((uri: vscode.Uri) => {
+        enqueueCsprojUpdate(() => syncCsprojForAsmdefScope(uri.fsPath));
+    });
+
+    asmdefWatcher.onDidDelete((uri: vscode.Uri) => {
+        enqueueCsprojUpdate(() => syncCsprojForAsmdefScope(uri.fsPath));
     });
 
     const renameDisposable = vscode.workspace.onDidRenameFiles((event) => {
@@ -30,6 +43,8 @@ export function activate(context: vscode.ExtensionContext) {
             const newFilePath = file.newUri.fsPath;
             const oldIsAssetScript = isAssetScriptFile(oldFilePath, rootPath);
             const newIsAssetScript = isAssetScriptFile(newFilePath, rootPath);
+            const oldIsAssetAsmdef = isAssetAsmdefFile(oldFilePath, rootPath);
+            const newIsAssetAsmdef = isAssetAsmdefFile(newFilePath, rootPath);
 
             if (oldIsAssetScript && newIsAssetScript) {
                 enqueueCsprojUpdate(() => renameInCsproj(oldFilePath, newFilePath));
@@ -43,11 +58,29 @@ export function activate(context: vscode.ExtensionContext) {
 
             if (newIsAssetScript) {
                 enqueueCsprojUpdate(() => addToCsproj(newFilePath));
+                return;
+            }
+
+            if (oldIsAssetAsmdef && newIsAssetAsmdef) {
+                enqueueCsprojUpdate(async () => {
+                    await syncCsprojForAsmdefScope(oldFilePath);
+                    await syncCsprojForAsmdefScope(newFilePath);
+                });
+                return;
+            }
+
+            if (oldIsAssetAsmdef) {
+                enqueueCsprojUpdate(() => syncCsprojForAsmdefScope(oldFilePath));
+                return;
+            }
+
+            if (newIsAssetAsmdef) {
+                enqueueCsprojUpdate(() => syncCsprojForAsmdefScope(newFilePath));
             }
         });
     });
 
-    context.subscriptions.push(watcher, renameDisposable);
+    context.subscriptions.push(scriptWatcher, asmdefWatcher, renameDisposable);
 }
 
 function enqueueCsprojUpdate(operation: () => Promise<void>): void {
@@ -67,14 +100,22 @@ function isInsideWorkspacePath(filePath: string, rootPath: string): boolean {
     return relativePath === '' || (!relativePath.startsWith('..') && !path.isAbsolute(relativePath));
 }
 
-function isAssetScriptFile(filePath: string, rootPath: string): boolean {
+function isAssetFileWithExtension(filePath: string, rootPath: string, extension: string): boolean {
     if (!isInsideWorkspacePath(filePath, rootPath)) {
         return false;
     }
 
     const relativePath = path.relative(rootPath, filePath);
     const firstPathSegment = relativePath.split(path.sep)[0];
-    return firstPathSegment === 'Assets' && path.extname(filePath).toLowerCase() === '.cs';
+    return firstPathSegment === 'Assets' && path.extname(filePath).toLowerCase() === extension;
+}
+
+function isAssetScriptFile(filePath: string, rootPath: string): boolean {
+    return isAssetFileWithExtension(filePath, rootPath, '.cs');
+}
+
+function isAssetAsmdefFile(filePath: string, rootPath: string): boolean {
+    return isAssetFileWithExtension(filePath, rootPath, '.asmdef');
 }
 
 function toCsprojIncludePath(rootPath: string, filePath: string): string {
@@ -193,6 +234,42 @@ function isDirectory(filePath: string): boolean {
         return fs.statSync(filePath).isDirectory();
     } catch {
         return false;
+    }
+}
+
+function findCsFilesInDirectory(directoryPath: string): string[] {
+    if (!isDirectory(directoryPath)) {
+        return [];
+    }
+
+    const csFiles: string[] = [];
+
+    try {
+        for (const entry of fs.readdirSync(directoryPath, { withFileTypes: true })) {
+            const entryPath = path.join(directoryPath, entry.name);
+
+            if (entry.isDirectory()) {
+                csFiles.push(...findCsFilesInDirectory(entryPath));
+                continue;
+            }
+
+            if (entry.isFile() && path.extname(entry.name).toLowerCase() === '.cs') {
+                csFiles.push(entryPath);
+            }
+        }
+    } catch (err: any) {
+        vscode.window.showWarningMessage(getLocalizedMessage(`Failed to scan ${path.basename(directoryPath)}: ${err.message}`));
+    }
+
+    return csFiles;
+}
+
+async function syncCsprojForAsmdefScope(asmdefPath: string) {
+    const scriptFiles = findCsFilesInDirectory(path.dirname(asmdefPath));
+
+    for (const scriptFile of scriptFiles) {
+        await removeFromCsproj(scriptFile);
+        await addToCsproj(scriptFile);
     }
 }
 
