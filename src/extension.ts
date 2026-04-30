@@ -196,6 +196,27 @@ function inferCompileIndent(itemGroupContent: string, itemGroupIndent: string): 
     return `${itemGroupIndent}  `;
 }
 
+function getCompileInsertIndex(itemGroupContent: string): number {
+    const compileLineRegex = /^[ \t]*<Compile\b[^>]*\bInclude=(['"])(.*?)\1[^>]*(?:\/>|>[\s\S]*?<\/Compile>)[ \t]*(?:\r?\n|$)/gm;
+    let insertIndex = -1;
+    let match: RegExpExecArray | null;
+
+    while ((match = compileLineRegex.exec(itemGroupContent)) !== null) {
+        insertIndex = match.index + match[0].length;
+    }
+
+    if (insertIndex !== -1) {
+        return insertIndex;
+    }
+
+    const firstReferenceMatch = itemGroupContent.match(/^[ \t]*<Reference\b/m);
+    if (firstReferenceMatch?.index !== undefined) {
+        return firstReferenceMatch.index;
+    }
+
+    return itemGroupContent.lastIndexOf('</ItemGroup>');
+}
+
 function addCompileInclude(csprojContent: string, relativePath: string): string | null {
     if (hasCompileInclude(csprojContent, relativePath)) {
         return null;
@@ -219,11 +240,7 @@ function addCompileInclude(csprojContent: string, relativePath: string): string 
         const itemGroupIndent = targetItemGroup[1];
         const compileIndent = inferCompileIndent(itemGroupContent, itemGroupIndent);
         const compileLine = `${compileIndent}<Compile Include="${escapedRelativePath}" />${lineEnding}`;
-        const compileLineRegex = /^[ \t]*<Compile\b[^>]*\bInclude=(['"])(.*?)\1[^>]*(?:\/>|>[\s\S]*?<\/Compile>)[ \t]*(?:\r?\n|$)/gm;
-        const compileMatches = Array.from(itemGroupContent.matchAll(compileLineRegex));
-        const insertIndex = compileMatches.length > 0 && compileMatches[compileMatches.length - 1].index !== undefined
-            ? compileMatches[compileMatches.length - 1].index! + compileMatches[compileMatches.length - 1][0].length
-            : itemGroupContent.lastIndexOf('</ItemGroup>');
+        const insertIndex = getCompileInsertIndex(itemGroupContent);
         const updatedItemGroup = `${itemGroupContent.slice(0, insertIndex)}${compileLine}${itemGroupContent.slice(insertIndex)}`;
 
         return `${csprojContent.slice(0, targetItemGroup.index)}${updatedItemGroup}${csprojContent.slice(targetItemGroup.index + itemGroupContent.length)}`;
