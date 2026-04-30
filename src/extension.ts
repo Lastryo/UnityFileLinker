@@ -78,6 +78,18 @@ function isAssetScriptFile(filePath: string, rootPath: string): boolean {
     return firstPathSegment === 'Assets' && path.extname(filePath).toLowerCase() === '.cs';
 }
 
+function toCsprojIncludePath(rootPath: string, filePath: string): string {
+    return path.relative(rootPath, filePath).replace(/\//g, '\\');
+}
+
+function normalizeCsprojIncludePath(includePath: string): string {
+    return includePath.replace(/[\\/]+/g, '\\').toLowerCase();
+}
+
+function isSameCsprojIncludePath(firstPath: string, secondPath: string): boolean {
+    return normalizeCsprojIncludePath(firstPath) === normalizeCsprojIncludePath(secondPath);
+}
+
 function isDirectory(filePath: string): boolean {
     try {
         return fs.statSync(filePath).isDirectory();
@@ -167,7 +179,7 @@ async function addToCsproj(filePath: string) {
     }
 
     const csprojContent = fs.readFileSync(csprojPath, encoding);
-    const relativePath = path.relative(rootPath, filePath).replace(/\//g, '\\');
+    const relativePath = toCsprojIncludePath(rootPath, filePath);
 
     // Парсинг XML-содержимого
     let xmlObj;
@@ -211,7 +223,7 @@ async function addToCsproj(filePath: string) {
     for (const ig of itemGroups) {
         if (ig.Compile) {
             for (const compile of ig.Compile) {
-                if (compile.$ && compile.$.Include === relativePath) {
+                if (compile.$ && isSameCsprojIncludePath(compile.$.Include, relativePath)) {
                     // Файл уже добавлен
                     return;
                 }
@@ -241,7 +253,7 @@ async function removeFromCsproj(filePath: string) {
     }
 
     const rootPath = workspaceFolders[0].uri.fsPath;
-    const relativePath = path.relative(rootPath, filePath).replace(/\//g, '\\');
+    const relativePath = toCsprojIncludePath(rootPath, filePath);
     const csprojCandidates = getRemovalCsprojCandidates(rootPath, filePath);
 
     for (const { csprojName, csprojPath } of csprojCandidates) {
@@ -271,7 +283,7 @@ async function removeFromCsproj(filePath: string) {
         for (const itemGroup of itemGroups) {
             if (itemGroup.Compile) {
                 const newCompileList = itemGroup.Compile.filter((compile: any) => {
-                    return compile.$.Include !== relativePath;
+                    return !compile.$ || !isSameCsprojIncludePath(compile.$.Include, relativePath);
                 });
 
                 if (newCompileList.length !== itemGroup.Compile.length) {
