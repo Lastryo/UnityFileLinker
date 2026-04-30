@@ -268,7 +268,7 @@ async function syncCsprojForAsmdefScope(asmdefPath: string) {
     const scriptFiles = findCsFilesInDirectory(path.dirname(asmdefPath));
 
     for (const scriptFile of scriptFiles) {
-        await removeFromCsproj(scriptFile);
+        await removeExactScriptPathFromAllCsproj(scriptFile);
         await addToCsproj(scriptFile);
     }
 }
@@ -406,6 +406,32 @@ async function removeFromCsproj(filePath: string) {
         fs.writeFileSync(csprojPath, updatedCsprojContent, encoding);
         vscode.window.showInformationMessage(getLocalizedMessage(`Removed ${path.basename(filePath)} from ${csprojName}`));
         return;
+    }
+}
+
+async function removeExactScriptPathFromAllCsproj(filePath: string) {
+    const workspaceFolders = vscode.workspace.workspaceFolders;
+    if (!workspaceFolders) {
+        return;
+    }
+
+    const rootPath = workspaceFolders[0].uri.fsPath;
+    const relativePath = toCsprojIncludePath(rootPath, filePath);
+    const csprojCandidates = getRemovalCsprojCandidates(rootPath, filePath);
+
+    for (const { csprojPath } of csprojCandidates) {
+        if (!fs.existsSync(csprojPath)) {
+            continue;
+        }
+
+        const csprojContent = fs.readFileSync(csprojPath, encoding);
+        const updatedCsprojContent = removeCompileInclude(csprojContent, relativePath);
+
+        if (!updatedCsprojContent) {
+            continue;
+        }
+
+        fs.writeFileSync(csprojPath, updatedCsprojContent, encoding);
     }
 }
 
