@@ -94,7 +94,7 @@ export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(scriptWatcher, asmdefWatcher, renameDisposable);
 }
 
-function enqueueCsprojUpdate(operation: () => Promise<void>): void {
+function enqueueCsprojUpdate(operation: () => Promise<unknown>): void {
     csprojUpdateQueue = csprojUpdateQueue
         .catch(() => undefined)
         .then(async () => {
