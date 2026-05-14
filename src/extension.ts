@@ -98,7 +98,7 @@ function enqueueCsprojUpdate(operation: () => Promise<unknown>): void {
             try {
                 await operation();
             } catch (err: any) {
-                vscode.window.showErrorMessage(getLocalizedMessage(`Failed to update csproj: ${err.message}`));
+                vscode.window.showErrorMessage(getLocalizedMessage('csprojUpdateFailed', { error: err.message }));
             }
         });
 }
@@ -160,7 +160,7 @@ function findCsFilesInDirectory(directoryPath: string): string[] {
             }
         }
     } catch (err: any) {
-        vscode.window.showWarningMessage(getLocalizedMessage(`Failed to scan ${path.basename(directoryPath)}: ${err.message}`));
+        vscode.window.showWarningMessage(getLocalizedMessage('scanFailed', { directoryName: path.basename(directoryPath), error: err.message }));
     }
 
     return csFiles;
@@ -264,10 +264,15 @@ async function syncCsprojForAsmdefScope(asmdefPath: string) {
     }
 
     for (const csprojName of missingCsprojNames) {
-        vscode.window.showErrorMessage(getLocalizedMessage(`${csprojName} not found`));
+        vscode.window.showErrorMessage(getLocalizedMessage('csprojNotFound', { csprojName }));
     }
 
-    vscode.window.showInformationMessage(getLocalizedMessage(`Resynced ${scriptFiles.length} scripts for ${path.basename(asmdefPath)}: ${updatedScripts} updated, ${unchangedScripts} unchanged`));
+    vscode.window.showInformationMessage(getLocalizedMessage('asmdefScopeResynced', {
+        scriptCount: scriptFiles.length,
+        asmdefName: path.basename(asmdefPath),
+        updatedCount: updatedScripts,
+        unchangedCount: unchangedScripts,
+    }));
 }
 
 function findNearestAsmdef(filePath: string, rootPath: string): string | null {
@@ -300,9 +305,9 @@ function getAssemblyNameFromAsmdef(asmdefPath: string): string | null {
             return asmdefJson.name;
         }
 
-        vscode.window.showWarningMessage(getLocalizedMessage(`${path.basename(asmdefPath)} does not contain a valid assembly name`));
+        vscode.window.showWarningMessage(getLocalizedMessage('asmdefInvalidAssemblyName', { asmdefName: path.basename(asmdefPath) }));
     } catch (err: any) {
-        vscode.window.showWarningMessage(getLocalizedMessage(`Failed to read ${path.basename(asmdefPath)}: ${err.message}`));
+        vscode.window.showWarningMessage(getLocalizedMessage('asmdefReadFailed', { asmdefName: path.basename(asmdefPath), error: err.message }));
     }
 
     return null;
@@ -352,7 +357,7 @@ async function addToCsproj(filePath: string, notify = true): Promise<CsprojMutat
     const { csprojName, csprojPath } = getCsprojInfoForFile(rootPath, filePath);
 
     if (!fs.existsSync(csprojPath)) {
-        vscode.window.showErrorMessage(getLocalizedMessage(`${csprojName} not found`));
+        vscode.window.showErrorMessage(getLocalizedMessage('csprojNotFound', { csprojName }));
         return 'unchanged';
     }
 
@@ -366,7 +371,7 @@ async function addToCsproj(filePath: string, notify = true): Promise<CsprojMutat
 
     fs.writeFileSync(csprojPath, updatedCsprojContent, encoding);
     if (notify) {
-        vscode.window.showInformationMessage(getLocalizedMessage(`Added ${path.basename(filePath)} to ${csprojName}`));
+        vscode.window.showInformationMessage(getLocalizedMessage('fileAddedToProject', { fileName: path.basename(filePath), csprojName }));
     }
 
     return 'changed';
@@ -399,7 +404,10 @@ async function removeFromCsproj(filePath: string, notify = true): Promise<Csproj
     }
 
     if (notify && changedProjects.length > 0) {
-        vscode.window.showInformationMessage(getLocalizedMessage(`Removed ${path.basename(filePath)} from ${changedProjects.join(', ')}`));
+        vscode.window.showInformationMessage(getLocalizedMessage('fileRemovedFromProjects', {
+            fileName: path.basename(filePath),
+            csprojNames: changedProjects.join(', '),
+        }));
     }
 
     return changedProjects.length > 0 ? 'changed' : 'unchanged';
