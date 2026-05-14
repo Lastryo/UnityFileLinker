@@ -1,7 +1,7 @@
 {
   "name": "unityfilelinker",
   "displayName": "UnityFileLinker",
-  "description": "Unity File Linker is a handy tool for C# developers that automatically syncs newly created or moved .cs files with your project without the need for recompilation.",
+  "description": "Unity File Linker automatically keeps Unity-generated .csproj files in sync with C# scripts and .asmdef files.",
   "publisher": "lastryo",
   "version": "0.1.1",
   "license": "MIT",
@@ -23,19 +23,10 @@
     "automation"
   ],
   "activationEvents": [
-    "onStartupFinished",
-    "onLanguage:cs",
-    "workspaceContains:**/*.cs"
+    "workspaceContains:ProjectSettings/ProjectVersion.txt",
+    "workspaceContains:Assets"
   ],
   "main": "./out/extension.js",
-  "contributes": {
-    "commands": [
-      {
-        "command": "unityfilelinker.helloWorld",
-        "title": "Hello World"
-      }
-    ]
-  },
   "scripts": {
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
