@@ -1,21 +1,22 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
+import {
+    addCompileInclude,
+    countCompileIncludes,
+    CsprojContentCacheEntry,
+    CsprojInfo,
+    CsprojMutationResult,
+    encoding,
+    isEditorScriptPath,
+    isSameFileSystemPath,
+    normalizeFileSystemPath,
+    removeCompileInclude,
+    toCsprojIncludePath,
+} from './csproj';
 import { getLocalizedMessage } from './localization';
 
-const encoding = 'utf-8';
 let csprojUpdateQueue = Promise.resolve();
-type CsprojMutationResult = 'changed' | 'unchanged';
-
-type CsprojInfo = {
-    csprojName: string;
-    csprojPath: string;
-};
-
-type CsprojContentCacheEntry = CsprojInfo & {
-    originalContent: string;
-    content: string;
-};
 
 export function activate(context: vscode.ExtensionContext) {
     const scriptWatcher = vscode.workspace.createFileSystemWatcher('**/Assets/**/*.cs');
@@ -42,20 +43,16 @@ export function activate(context: vscode.ExtensionContext) {
     });
 
     const renameDisposable = vscode.workspace.onDidRenameFiles((event) => {
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders) {
-            return;
-        }
-
-        const rootPath = workspaceFolders[0].uri.fsPath;
-
         event.files.forEach((file) => {
             const oldFilePath = file.oldUri.fsPath;
             const newFilePath = file.newUri.fsPath;
-            const oldIsAssetScript = isAssetScriptFile(oldFilePath, rootPath);
-            const newIsAssetScript = isAssetScriptFile(newFilePath, rootPath);
-            const oldIsAssetAsmdef = isAssetAsmdefFile(oldFilePath, rootPath);
-            const newIsAssetAsmdef = isAssetAsmdefFile(newFilePath, rootPath);
+            const oldRootPath = getWorkspaceRootForPath(oldFilePath);
+            const newRootPath = getWorkspaceRootForPath(newFilePath);
+
+            const oldIsAssetScript = oldRootPath ? isAssetScriptFile(oldFilePath, oldRootPath) : false;
+            const newIsAssetScript = newRootPath ? isAssetScriptFile(newFilePath, newRootPath) : false;
+            const oldIsAssetAsmdef = oldRootPath ? isAssetAsmdefFile(oldFilePath, oldRootPath) : false;
+            const newIsAssetAsmdef = newRootPath ? isAssetAsmdefFile(newFilePath, newRootPath) : false;
 
             if (oldIsAssetScript && newIsAssetScript) {
                 enqueueCsprojUpdate(() => renameInCsproj(oldFilePath, newFilePath));
@@ -106,6 +103,11 @@ function enqueueCsprojUpdate(operation: () => Promise<unknown>): void {
         });
 }
 
+function getWorkspaceRootForPath(filePath: string): string | undefined {
+    const workspaceFolder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(filePath));
+    return workspaceFolder?.uri.fsPath;
+}
+
 function isInsideWorkspacePath(filePath: string, rootPath: string): boolean {
     const relativePath = path.relative(rootPath, filePath);
     return relativePath === '' || (!relativePath.startsWith('..') && !path.isAbsolute(relativePath));
@@ -127,150 +129,6 @@ function isAssetScriptFile(filePath: string, rootPath: string): boolean {
 
 function isAssetAsmdefFile(filePath: string, rootPath: string): boolean {
     return isAssetFileWithExtension(filePath, rootPath, '.asmdef');
-}
-
-function toCsprojIncludePath(rootPath: string, filePath: string): string {
-    return path.relative(rootPath, filePath).replace(/\//g, '\\');
-}
-
-function normalizeCsprojIncludePath(includePath: string): string {
-    return decodeXmlAttribute(includePath).replace(/[\\/]+/g, '\\').toLowerCase();
-}
-
-function isSameCsprojIncludePath(firstPath: string, secondPath: string): boolean {
-    return normalizeCsprojIncludePath(firstPath) === normalizeCsprojIncludePath(secondPath);
-}
-
-function normalizeFileSystemPath(filePath: string): string {
-    return path.resolve(filePath).toLowerCase();
-}
-
-function isSameFileSystemPath(firstPath: string, secondPath: string): boolean {
-    return normalizeFileSystemPath(firstPath) === normalizeFileSystemPath(secondPath);
-}
-
-function decodeXmlAttribute(value: string): string {
-    return value
-        .replace(/&quot;/g, '"')
-        .replace(/&apos;/g, "'")
-        .replace(/&lt;/g, '<')
-        .replace(/&gt;/g, '>')
-        .replace(/&amp;/g, '&');
-}
-
-function escapeXmlAttribute(value: string): string {
-    return value
-        .replace(/&/g, '&amp;')
-        .replace(/"/g, '&quot;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;');
-}
-
-function getLineEnding(content: string): string {
-    return content.includes('\r\n') ? '\r\n' : '\n';
-}
-
-function getCompileIncludeMatches(csprojContent: string): RegExpMatchArray[] {
-    return Array.from(csprojContent.matchAll(/<Compile\b[^>]*\bInclude=(['"])(.*?)\1[^>]*(?:\/>|>[\s\S]*?<\/Compile>)/g));
-}
-
-function countCompileIncludes(csprojContent: string, relativePath: string): number {
-    return getCompileIncludeMatches(csprojContent).filter(match => isSameCsprojIncludePath(match[2], relativePath)).length;
-}
-
-function hasCompileInclude(csprojContent: string, relativePath: string): boolean {
-    return countCompileIncludes(csprojContent, relativePath) > 0;
-}
-
-function inferCompileIndent(itemGroupContent: string, itemGroupIndent: string): string {
-    const compileLineMatch = itemGroupContent.match(/\r?\n([ \t]*)<Compile\b/);
-    if (compileLineMatch) {
-        return compileLineMatch[1];
-    }
-
-    const childLineMatch = itemGroupContent.match(/\r?\n([ \t]*)<[^/!][^>]*>/);
-    if (childLineMatch) {
-        return childLineMatch[1];
-    }
-
-    return `${itemGroupIndent}  `;
-}
-
-function getCompileInsertIndex(itemGroupContent: string): number {
-    const compileLineRegex = /^[ \t]*<Compile\b[^>]*\bInclude=(['"])(.*?)\1[^>]*(?:\/>|>[\s\S]*?<\/Compile>)[ \t]*(?:\r?\n|$)/gm;
-    let insertIndex = -1;
-    let match: RegExpExecArray | null;
-
-    while ((match = compileLineRegex.exec(itemGroupContent)) !== null) {
-        insertIndex = match.index + match[0].length;
-    }
-
-    if (insertIndex !== -1) {
-        return insertIndex;
-    }
-
-    const firstReferenceMatch = itemGroupContent.match(/^[ \t]*<Reference\b/m);
-    if (firstReferenceMatch?.index !== undefined) {
-        return firstReferenceMatch.index;
-    }
-
-    return itemGroupContent.lastIndexOf('</ItemGroup>');
-}
-
-function addCompileInclude(csprojContent: string, relativePath: string): string | null {
-    if (hasCompileInclude(csprojContent, relativePath)) {
-        return null;
-    }
-
-    const lineEnding = getLineEnding(csprojContent);
-    const escapedRelativePath = escapeXmlAttribute(relativePath);
-    const itemGroupRegex = /(^[ \t]*)<ItemGroup\b[^>]*>[\s\S]*?<\/ItemGroup>/gm;
-    const itemGroups = Array.from(csprojContent.matchAll(itemGroupRegex));
-
-    let targetItemGroup: RegExpMatchArray | undefined;
-    const analyzerIndex = itemGroups.findIndex(match => /<Analyzer\b/.test(match[0]));
-    if (analyzerIndex !== -1 && analyzerIndex + 1 < itemGroups.length) {
-        targetItemGroup = itemGroups[analyzerIndex + 1];
-    } else {
-        targetItemGroup = itemGroups.find(match => /<Compile\b/.test(match[0])) ?? itemGroups[0];
-    }
-
-    if (targetItemGroup && targetItemGroup.index !== undefined) {
-        const itemGroupContent = targetItemGroup[0];
-        const itemGroupIndent = targetItemGroup[1];
-        const compileIndent = inferCompileIndent(itemGroupContent, itemGroupIndent);
-        const compileLine = `${compileIndent}<Compile Include="${escapedRelativePath}" />${lineEnding}`;
-        const insertIndex = getCompileInsertIndex(itemGroupContent);
-        const updatedItemGroup = `${itemGroupContent.slice(0, insertIndex)}${compileLine}${itemGroupContent.slice(insertIndex)}`;
-
-        return `${csprojContent.slice(0, targetItemGroup.index)}${updatedItemGroup}${csprojContent.slice(targetItemGroup.index + itemGroupContent.length)}`;
-    }
-
-    const projectCloseMatch = csprojContent.match(/(^[ \t]*)<\/Project>/m);
-    if (!projectCloseMatch || projectCloseMatch.index === undefined) {
-        throw new Error('Project closing tag not found');
-    }
-
-    const projectIndent = projectCloseMatch[1];
-    const itemGroupIndent = `${projectIndent}  `;
-    const compileIndent = `${itemGroupIndent}  `;
-    const newItemGroup = `${itemGroupIndent}<ItemGroup>${lineEnding}${compileIndent}<Compile Include="${escapedRelativePath}" />${lineEnding}${itemGroupIndent}</ItemGroup>${lineEnding}`;
-
-    return `${csprojContent.slice(0, projectCloseMatch.index)}${newItemGroup}${csprojContent.slice(projectCloseMatch.index)}`;
-}
-
-function removeCompileInclude(csprojContent: string, relativePath: string): string | null {
-    let removed = false;
-    const updatedContent = csprojContent.replace(/(^[ \t]*<Compile\b[^>]*\bInclude=(['"])(.*?)\2[^>]*(?:\/>|>[\s\S]*?<\/Compile>)[ \t]*(?:\r?\n|$))/gm, (match, _line, _quote, includePath) => {
-        if (isSameCsprojIncludePath(includePath, relativePath)) {
-            removed = true;
-            return '';
-        }
-
-        return match;
-    });
-
-    return removed ? updatedContent : null;
 }
 
 function isDirectory(filePath: string): boolean {
@@ -339,12 +197,11 @@ function getCsprojCacheEntry(cache: Map<string, CsprojContentCacheEntry>, csproj
 }
 
 async function syncCsprojForAsmdefScope(asmdefPath: string) {
-    const workspaceFolders = vscode.workspace.workspaceFolders;
-    if (!workspaceFolders) {
+    const rootPath = getWorkspaceRootForPath(asmdefPath);
+    if (!rootPath) {
         return;
     }
 
-    const rootPath = workspaceFolders[0].uri.fsPath;
     const scriptFiles = findCsFilesInDirectory(path.dirname(asmdefPath));
 
     if (scriptFiles.length === 0) {
@@ -413,12 +270,10 @@ async function syncCsprojForAsmdefScope(asmdefPath: string) {
     vscode.window.showInformationMessage(getLocalizedMessage(`Resynced ${scriptFiles.length} scripts for ${path.basename(asmdefPath)}: ${updatedScripts} updated, ${unchangedScripts} unchanged`));
 }
 
-// Функция для поиска ближайшего .asmdef файла
-function findNearestAsmdef(filePath: string): string | null {
+function findNearestAsmdef(filePath: string, rootPath: string): string | null {
     let dir = path.dirname(filePath);
-    const root = vscode.workspace.workspaceFolders![0].uri.fsPath;
 
-    while (isInsideWorkspacePath(dir, root)) {
+    while (isInsideWorkspacePath(dir, rootPath)) {
         if (isDirectory(dir)) {
             const asmdefFiles = fs.readdirSync(dir).filter(file => file.endsWith('.asmdef'));
             if (asmdefFiles.length > 0) {
@@ -436,7 +291,6 @@ function findNearestAsmdef(filePath: string): string | null {
     return null;
 }
 
-// Функция для получения имени сборки из .asmdef файла
 function getAssemblyNameFromAsmdef(asmdefPath: string): string | null {
     try {
         const content = fs.readFileSync(asmdefPath, encoding);
@@ -455,13 +309,12 @@ function getAssemblyNameFromAsmdef(asmdefPath: string): string | null {
 }
 
 function getDefaultCsprojInfo(rootPath: string, filePath: string): CsprojInfo {
-    const isEditorScript = filePath.includes(`${path.sep}Editor${path.sep}`);
-    const csprojName = isEditorScript ? 'Assembly-CSharp-Editor.csproj' : 'Assembly-CSharp.csproj';
+    const csprojName = isEditorScriptPath(filePath) ? 'Assembly-CSharp-Editor.csproj' : 'Assembly-CSharp.csproj';
     return { csprojName, csprojPath: path.join(rootPath, csprojName) };
 }
 
 function getCsprojInfoForFile(rootPath: string, filePath: string): CsprojInfo {
-    const asmdefPath = findNearestAsmdef(filePath);
+    const asmdefPath = findNearestAsmdef(filePath, rootPath);
 
     if (asmdefPath) {
         const assemblyName = getAssemblyNameFromAsmdef(asmdefPath);
@@ -478,7 +331,7 @@ function getRemovalCsprojCandidates(rootPath: string, filePath: string): CsprojI
     const candidates = new Map<string, CsprojInfo>();
 
     const addCandidate = (candidate: CsprojInfo) => {
-        candidates.set(candidate.csprojPath, candidate);
+        candidates.set(normalizeFileSystemPath(candidate.csprojPath), candidate);
     };
 
     addCandidate(getCsprojInfoForFile(rootPath, filePath));
@@ -491,12 +344,11 @@ function getRemovalCsprojCandidates(rootPath: string, filePath: string): CsprojI
 }
 
 async function addToCsproj(filePath: string, notify = true): Promise<CsprojMutationResult> {
-    const workspaceFolders = vscode.workspace.workspaceFolders;
-    if (!workspaceFolders) {
+    const rootPath = getWorkspaceRootForPath(filePath);
+    if (!rootPath) {
         return 'unchanged';
     }
 
-    const rootPath = workspaceFolders[0].uri.fsPath;
     const { csprojName, csprojPath } = getCsprojInfoForFile(rootPath, filePath);
 
     if (!fs.existsSync(csprojPath)) {
@@ -509,11 +361,9 @@ async function addToCsproj(filePath: string, notify = true): Promise<CsprojMutat
     const updatedCsprojContent = addCompileInclude(csprojContent, relativePath);
 
     if (!updatedCsprojContent) {
-        // Файл уже добавлен
         return 'unchanged';
     }
 
-    // Записываем изменения обратно в файл .csproj
     fs.writeFileSync(csprojPath, updatedCsprojContent, encoding);
     if (notify) {
         vscode.window.showInformationMessage(getLocalizedMessage(`Added ${path.basename(filePath)} to ${csprojName}`));
@@ -523,14 +373,14 @@ async function addToCsproj(filePath: string, notify = true): Promise<CsprojMutat
 }
 
 async function removeFromCsproj(filePath: string, notify = true): Promise<CsprojMutationResult> {
-    const workspaceFolders = vscode.workspace.workspaceFolders;
-    if (!workspaceFolders) {
+    const rootPath = getWorkspaceRootForPath(filePath);
+    if (!rootPath) {
         return 'unchanged';
     }
 
-    const rootPath = workspaceFolders[0].uri.fsPath;
     const relativePath = toCsprojIncludePath(rootPath, filePath);
     const csprojCandidates = getRemovalCsprojCandidates(rootPath, filePath);
+    const changedProjects: string[] = [];
 
     for (const { csprojName, csprojPath } of csprojCandidates) {
         if (!fs.existsSync(csprojPath)) {
@@ -544,22 +394,19 @@ async function removeFromCsproj(filePath: string, notify = true): Promise<Csproj
             continue;
         }
 
-        // Записываем изменения обратно в файл .csproj
         fs.writeFileSync(csprojPath, updatedCsprojContent, encoding);
-        if (notify) {
-            vscode.window.showInformationMessage(getLocalizedMessage(`Removed ${path.basename(filePath)} from ${csprojName}`));
-        }
-        return 'changed';
+        changedProjects.push(csprojName);
     }
 
-    return 'unchanged';
+    if (notify && changedProjects.length > 0) {
+        vscode.window.showInformationMessage(getLocalizedMessage(`Removed ${path.basename(filePath)} from ${changedProjects.join(', ')}`));
+    }
+
+    return changedProjects.length > 0 ? 'changed' : 'unchanged';
 }
 
 async function renameInCsproj(oldFilePath: string, newFilePath: string) {
-    // Удаляем старый файл из проекта
     await removeFromCsproj(oldFilePath);
-
-    // Добавляем новый файл в проект
     await addToCsproj(newFilePath);
 }
 
