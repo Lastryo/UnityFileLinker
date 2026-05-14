@@ -16,7 +16,9 @@ import {
 } from './csproj';
 import { getLocalizedMessage } from './localization';
 
+const asmdefSyncDebounceMs = 250;
 let csprojUpdateQueue = Promise.resolve();
+const pendingAsmdefSyncs = new Map<string, NodeJS.Timeout>();
 
 export function activate(context: vscode.ExtensionContext) {
     const scriptWatcher = vscode.workspace.createFileSystemWatcher('**/Assets/**/*.cs');
@@ -31,15 +33,15 @@ export function activate(context: vscode.ExtensionContext) {
     });
 
     asmdefWatcher.onDidCreate((uri: vscode.Uri) => {
-        enqueueCsprojUpdate(() => syncCsprojForAsmdefScope(uri.fsPath));
+        scheduleAsmdefSync(uri.fsPath);
     });
 
     asmdefWatcher.onDidChange((uri: vscode.Uri) => {
-        enqueueCsprojUpdate(() => syncCsprojForAsmdefScope(uri.fsPath));
+        scheduleAsmdefSync(uri.fsPath);
     });
 
     asmdefWatcher.onDidDelete((uri: vscode.Uri) => {
-        enqueueCsprojUpdate(() => syncCsprojForAsmdefScope(uri.fsPath));
+        scheduleAsmdefSync(uri.fsPath);
     });
 
     const renameDisposable = vscode.workspace.onDidRenameFiles((event) => {
@@ -69,26 +71,24 @@ export function activate(context: vscode.ExtensionContext) {
                 return;
             }
 
-            if (oldIsAssetAsmdef && newIsAssetAsmdef) {
-                enqueueCsprojUpdate(async () => {
-                    await syncCsprojForAsmdefScope(oldFilePath);
-                    await syncCsprojForAsmdefScope(newFilePath);
-                });
-                return;
-            }
-
             if (oldIsAssetAsmdef) {
-                enqueueCsprojUpdate(() => syncCsprojForAsmdefScope(oldFilePath));
-                return;
+                scheduleAsmdefSync(oldFilePath);
             }
 
             if (newIsAssetAsmdef) {
-                enqueueCsprojUpdate(() => syncCsprojForAsmdefScope(newFilePath));
+                scheduleAsmdefSync(newFilePath);
             }
         });
     });
 
-    context.subscriptions.push(scriptWatcher, asmdefWatcher, renameDisposable);
+    const pendingAsmdefSyncsDisposable = new vscode.Disposable(() => {
+        for (const timer of pendingAsmdefSyncs.values()) {
+            clearTimeout(timer);
+        }
+        pendingAsmdefSyncs.clear();
+    });
+
+    context.subscriptions.push(scriptWatcher, asmdefWatcher, renameDisposable, pendingAsmdefSyncsDisposable);
 }
 
 function enqueueCsprojUpdate(operation: () => Promise<unknown>): void {
@@ -101,6 +101,22 @@ function enqueueCsprojUpdate(operation: () => Promise<unknown>): void {
                 vscode.window.showErrorMessage(getLocalizedMessage('csprojUpdateFailed', { error: err.message }));
             }
         });
+}
+
+function scheduleAsmdefSync(asmdefPath: string): void {
+    const key = normalizeFileSystemPath(asmdefPath);
+    const existingTimer = pendingAsmdefSyncs.get(key);
+
+    if (existingTimer) {
+        clearTimeout(existingTimer);
+    }
+
+    const timer = setTimeout(() => {
+        pendingAsmdefSyncs.delete(key);
+        enqueueCsprojUpdate(() => syncCsprojForAsmdefScope(asmdefPath));
+    }, asmdefSyncDebounceMs);
+
+    pendingAsmdefSyncs.set(key, timer);
 }
 
 function getWorkspaceRootForPath(filePath: string): string | undefined {
