@@ -23,8 +23,7 @@
     "automation"
   ],
   "activationEvents": [
-    "workspaceContains:ProjectSettings/ProjectVersion.txt",
-    "workspaceContains:Assets"
+    "workspaceContains:ProjectSettings/ProjectVersion.txt"
   ],
   "main": "./out/extension.js",
   "scripts": {
