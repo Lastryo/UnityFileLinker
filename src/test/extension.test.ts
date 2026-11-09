@@ -3,6 +3,7 @@ import * as path from 'path';
 import {
     addCompileInclude,
     countCompileIncludes,
+    createCsprojContentEntry,
     decodeXmlAttribute,
     escapeXmlAttribute,
     getDefaultCsprojName,
@@ -14,7 +15,9 @@ import {
     parseMetaGuid,
     reassignCompileInclude,
     removeCompileInclude,
+    removeCompileIncludes,
     removeCompileIncludesUnderFolder,
+    setCsprojEntryContent,
     toCsprojIncludePath,
 } from '../csproj';
 
@@ -147,6 +150,15 @@ suite('Csproj helpers', () => {
         assert.strictEqual(removeCompileIncludesUnderFolder(project, 'Assets\\Missing'), null);
     });
 
+    test('removes several includes in one pass regardless of slash direction', () => {
+        const updated = removeCompileIncludes(basicProject + addCompileInclude(basicProject, 'Assets/Other.cs'), ['Assets/Existing.cs', 'Assets\\Other.cs']);
+
+        assert.ok(updated);
+        assert.strictEqual(hasCompileInclude(updated, 'Assets\\Existing.cs'), false);
+        assert.strictEqual(hasCompileInclude(updated, 'Assets\\Other.cs'), false);
+        assert.strictEqual(removeCompileIncludes(basicProject, ['Assets\\Missing.cs']), null);
+    });
+
     test('chooses default projects from the project-relative path', () => {
         assert.strictEqual(getDefaultCsprojName('Assets\\Player.cs'), 'Assembly-CSharp.csproj');
         assert.strictEqual(getDefaultCsprojName('Assets\\Tools\\Editor\\Tool.cs'), 'Assembly-CSharp-Editor.csproj');
@@ -172,7 +184,7 @@ suite('Csproj helpers', () => {
     suite('reassignCompileInclude', () => {
         const script = 'Assets\\Game\\Player.cs';
         const withScript = addCompileInclude(basicProject, script)!;
-        const entry = (csprojName: string, content: string) => ({ csprojName, csprojPath: path.resolve(csprojName), originalContent: content, content });
+        const entry = (csprojName: string, content: string) => createCsprojContentEntry({ csprojName, csprojPath: path.resolve(csprojName) }, content);
 
         test('moves a script to its target project', () => {
             const oldProject = entry('Assembly-CSharp.csproj', withScript);
@@ -197,6 +209,34 @@ suite('Csproj helpers', () => {
             assert.strictEqual(reassignCompileInclude([project, playerProject], project.csprojPath, script), 'changed');
             assert.strictEqual(hasCompileInclude(project.content, script), true);
             assert.strictEqual(hasCompileInclude(playerProject.content, script), true);
+        });
+
+        test('adds many scripts to one project without duplicates', () => {
+            const project = entry('Game.csproj', basicProject);
+            const scripts = ['Assets\\A.cs', 'Assets\\B.cs', 'Assets\\A.cs'];
+
+            for (const scriptPath of scripts) {
+                reassignCompileInclude([project], project.csprojPath, scriptPath);
+            }
+
+            assert.strictEqual(countCompileIncludes(project.content, 'Assets\\A.cs'), 1);
+            assert.strictEqual(countCompileIncludes(project.content, 'Assets\\B.cs'), 1);
+        });
+
+        test('collapses duplicate includes in the target project', () => {
+            const duplicated = withScript.replace('</ItemGroup>', `  <Compile Include="${script}" />\n  </ItemGroup>`);
+            const project = entry('Game.csproj', duplicated);
+
+            assert.strictEqual(reassignCompileInclude([project], project.csprojPath, script), 'changed');
+            assert.strictEqual(countCompileIncludes(project.content, script), 1);
+        });
+
+        test('sees content replaced through setCsprojEntryContent', () => {
+            const project = entry('Game.csproj', withScript);
+            setCsprojEntryContent(project, removeCompileInclude(withScript, script)!);
+
+            assert.strictEqual(reassignCompileInclude([project], project.csprojPath, script), 'changed');
+            assert.strictEqual(countCompileIncludes(project.content, script), 1);
         });
 
         test('reports unchanged when the script is already in place', () => {

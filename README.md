@@ -37,7 +37,7 @@ You can also install it from inside Visual Studio Code:
 - Removes stale script references from old `.csproj` files during `.asmdef` resync.
 - Avoids duplicate `<Compile Include="...">` entries.
 - Preserves existing `.csproj` formatting as much as possible.
-- Uses batched `.asmdef` resync to reduce unnecessary file reads and writes.
+- Batches file changes, so a branch switch or asset import reads and writes each `.csproj` once and shows one notification.
 
 ## How it works
 

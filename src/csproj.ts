@@ -17,6 +17,8 @@ export type CsprojInfo = {
 export type CsprojContentCacheEntry = CsprojInfo & {
     originalContent: string;
     content: string;
+    /** Number of Compile elements per normalized include path, kept in step with content. */
+    includeCounts: Map<string, number>;
 };
 
 export function toCsprojIncludePath(rootPath: string, filePath: string): string {
@@ -111,6 +113,26 @@ function getCompileIncludeMatches(csprojContent: string): RegExpMatchArray[] {
 
 function createCompileLineRegex(): RegExp {
     return new RegExp(String.raw`^[ \t]*${compileElementPattern}[ \t]*(?:\r?\n|$)`, 'gm');
+}
+
+function getCompileIncludeCounts(csprojContent: string): Map<string, number> {
+    const counts = new Map<string, number>();
+
+    for (const match of getCompileIncludeMatches(csprojContent)) {
+        const includePath = normalizeCsprojIncludePath(match[2]);
+        counts.set(includePath, (counts.get(includePath) ?? 0) + 1);
+    }
+
+    return counts;
+}
+
+export function createCsprojContentEntry(info: CsprojInfo, content: string): CsprojContentCacheEntry {
+    return { ...info, originalContent: content, content, includeCounts: getCompileIncludeCounts(content) };
+}
+
+export function setCsprojEntryContent(entry: CsprojContentCacheEntry, content: string): void {
+    entry.content = content;
+    entry.includeCounts = getCompileIncludeCounts(content);
 }
 
 export function countCompileIncludes(csprojContent: string, relativePath: string): number {
@@ -216,6 +238,11 @@ export function removeCompileInclude(csprojContent: string, relativePath: string
     return removeCompileIncludesMatching(csprojContent, includePath => isSameCsprojIncludePath(includePath, relativePath));
 }
 
+export function removeCompileIncludes(csprojContent: string, relativePaths: string[]): string | null {
+    const normalizedPaths = new Set(relativePaths.map(normalizeCsprojIncludePath));
+    return removeCompileIncludesMatching(csprojContent, includePath => normalizedPaths.has(normalizeCsprojIncludePath(includePath)));
+}
+
 export function removeCompileIncludesUnderFolder(csprojContent: string, relativeFolderPath: string): string | null {
     const folderPrefix = `${normalizeCsprojIncludePath(relativeFolderPath)}\\`;
     return removeCompileIncludesMatching(csprojContent, includePath => normalizeCsprojIncludePath(includePath).startsWith(folderPrefix));
@@ -231,23 +258,26 @@ export function reassignCompileInclude(
     }
 
     const playerCsprojPath = getPlayerCsprojPath(targetCsprojPath);
+    const includeKey = normalizeCsprojIncludePath(relativePath);
     let changed = false;
 
     for (const entry of entries) {
         const isTarget = isSameFileSystemPath(entry.csprojPath, targetCsprojPath) || isSameFileSystemPath(entry.csprojPath, playerCsprojPath);
 
-        if (countCompileIncludes(entry.content, relativePath) > (isTarget ? 1 : 0)) {
+        if ((entry.includeCounts.get(includeKey) ?? 0) > (isTarget ? 1 : 0)) {
             const withoutInclude = removeCompileInclude(entry.content, relativePath);
             if (withoutInclude) {
                 entry.content = withoutInclude;
+                entry.includeCounts.delete(includeKey);
                 changed = true;
             }
         }
 
-        if (isTarget) {
+        if (isTarget && !entry.includeCounts.has(includeKey)) {
             const withInclude = addCompileInclude(entry.content, relativePath);
             if (withInclude) {
                 entry.content = withInclude;
+                entry.includeCounts.set(includeKey, 1);
                 changed = true;
             }
         }

@@ -17,7 +17,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 - The extension now activates only in Unity workspaces.
 - Notifications now use complete localized messages.
-- `.asmdef` resync events are debounced.
+- File changes are now processed in batches: a branch switch or asset import reads and writes each `.csproj` once and shows one notification.
+- `.asmdef` changes that do not affect any project no longer show a notification.
 - Scripts stay where they are, with a single warning, when their `.asmdef` is invalid. They no longer fall back to `Assembly-CSharp`.
 
 ### Fixed

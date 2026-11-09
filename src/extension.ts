@@ -2,13 +2,11 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import {
-    addCompileInclude,
+    createCsprojContentEntry,
     CsprojContentCacheEntry,
     CsprojInfo,
-    CsprojMutationResult,
     encoding,
     getDefaultCsprojName,
-    getPlayerCsprojPath,
     isUnityIgnoredName,
     isUnityIgnoredPath,
     normalizeFileSystemPath,
@@ -16,110 +14,73 @@ import {
     parseAsmrefReference,
     parseMetaGuid,
     reassignCompileInclude,
-    removeCompileInclude,
+    removeCompileIncludes,
     removeCompileIncludesUnderFolder,
+    setCsprojEntryContent,
     toCsprojIncludePath,
 } from './csproj';
 import { getLocalizedMessage } from './localization';
 
+type SyncBatch = {
+    scripts: string[];
+    assemblyDefinitions: string[];
+    removedFolders: string[];
+    addedFolders: string[];
+};
+
 const syncDebounceMs = 250;
 const nonFolderDeleteExtensions = new Set(['.cs', '.asmdef', '.asmref', '.meta']);
 let csprojUpdateQueue = Promise.resolve();
-const pendingAsmdefSyncs = new Map<string, NodeJS.Timeout>();
+const pendingScripts = new Set<string>();
+const pendingAssemblyDefinitions = new Set<string>();
 const pendingRemovedFolders = new Set<string>();
 const pendingAddedFolders = new Set<string>();
-let folderSyncTimer: NodeJS.Timeout | undefined;
+let syncTimer: NodeJS.Timeout | undefined;
 
 export function activate(context: vscode.ExtensionContext) {
-    const scriptWatcher = vscode.workspace.createFileSystemWatcher('**/Assets/**/*.cs');
-    const assemblyDefinitionWatcher = vscode.workspace.createFileSystemWatcher('**/Assets/**/*.{asmdef,asmref}');
+    const fileWatcher = vscode.workspace.createFileSystemWatcher('**/Assets/**/*.{cs,asmdef,asmref}');
     const assetWatcher = vscode.workspace.createFileSystemWatcher('**/Assets/**', false, true, false);
+    const onFileEvent = (uri: vscode.Uri) => scheduleFileSync(uri.fsPath);
 
-    scriptWatcher.onDidCreate((uri: vscode.Uri) => {
-        if (isAssetScriptFile(uri.fsPath)) {
-            enqueueCsprojUpdate(() => addToCsproj(uri.fsPath));
+    fileWatcher.onDidCreate(onFileEvent);
+    fileWatcher.onDidChange((uri: vscode.Uri) => {
+        if (path.extname(uri.fsPath).toLowerCase() !== '.cs') {
+            scheduleFileSync(uri.fsPath);
         }
     });
-
-    scriptWatcher.onDidDelete((uri: vscode.Uri) => {
-        if (isAssetScriptFile(uri.fsPath)) {
-            enqueueCsprojUpdate(() => removeFromCsproj(uri.fsPath));
-        }
-    });
-
-    const onAssemblyDefinitionEvent = (uri: vscode.Uri) => {
-        if (isAssetAssemblyDefinitionFile(uri.fsPath)) {
-            scheduleAsmdefSync(uri.fsPath);
-        }
-    };
-
-    assemblyDefinitionWatcher.onDidCreate(onAssemblyDefinitionEvent);
-    assemblyDefinitionWatcher.onDidChange(onAssemblyDefinitionEvent);
-    assemblyDefinitionWatcher.onDidDelete(onAssemblyDefinitionEvent);
+    fileWatcher.onDidDelete(onFileEvent);
 
     assetWatcher.onDidCreate((uri: vscode.Uri) => {
         if (isDirectory(uri.fsPath)) {
-            scheduleFolderSync(pendingAddedFolders, uri.fsPath);
+            scheduleSync(pendingAddedFolders, uri.fsPath);
         }
     });
 
     assetWatcher.onDidDelete((uri: vscode.Uri) => {
         if (!nonFolderDeleteExtensions.has(path.extname(uri.fsPath).toLowerCase())) {
-            scheduleFolderSync(pendingRemovedFolders, uri.fsPath);
+            scheduleSync(pendingRemovedFolders, uri.fsPath);
         }
     });
 
     const renameDisposable = vscode.workspace.onDidRenameFiles((event) => {
-        event.files.forEach((file) => {
-            const oldFilePath = file.oldUri.fsPath;
-            const newFilePath = file.newUri.fsPath;
-
-            if (isDirectory(newFilePath)) {
-                scheduleFolderSync(pendingRemovedFolders, oldFilePath);
-                scheduleFolderSync(pendingAddedFolders, newFilePath);
-                return;
+        for (const file of event.files) {
+            if (isDirectory(file.newUri.fsPath)) {
+                scheduleSync(pendingRemovedFolders, file.oldUri.fsPath);
+                scheduleSync(pendingAddedFolders, file.newUri.fsPath);
+                continue;
             }
 
-            const oldIsAssetScript = isAssetScriptFile(oldFilePath);
-            const newIsAssetScript = isAssetScriptFile(newFilePath);
-
-            if (oldIsAssetScript && newIsAssetScript) {
-                enqueueCsprojUpdate(() => renameInCsproj(oldFilePath, newFilePath));
-                return;
-            }
-
-            if (oldIsAssetScript) {
-                enqueueCsprojUpdate(() => removeFromCsproj(oldFilePath));
-                return;
-            }
-
-            if (newIsAssetScript) {
-                enqueueCsprojUpdate(() => addToCsproj(newFilePath));
-                return;
-            }
-
-            if (isAssetAssemblyDefinitionFile(oldFilePath)) {
-                scheduleAsmdefSync(oldFilePath);
-            }
-
-            if (isAssetAssemblyDefinitionFile(newFilePath)) {
-                scheduleAsmdefSync(newFilePath);
-            }
-        });
-    });
-
-    const pendingSyncsDisposable = new vscode.Disposable(() => {
-        for (const timer of pendingAsmdefSyncs.values()) {
-            clearTimeout(timer);
+            scheduleFileSync(file.oldUri.fsPath);
+            scheduleFileSync(file.newUri.fsPath);
         }
-        pendingAsmdefSyncs.clear();
-
-        clearTimeout(folderSyncTimer);
-        pendingRemovedFolders.clear();
-        pendingAddedFolders.clear();
     });
 
-    context.subscriptions.push(scriptWatcher, assemblyDefinitionWatcher, assetWatcher, renameDisposable, pendingSyncsDisposable);
+    const pendingSyncDisposable = new vscode.Disposable(() => {
+        clearTimeout(syncTimer);
+        takePendingBatch();
+    });
+
+    context.subscriptions.push(fileWatcher, assetWatcher, renameDisposable, pendingSyncDisposable);
 }
 
 function enqueueCsprojUpdate(operation: () => Promise<unknown>): void {
@@ -134,37 +95,43 @@ function enqueueCsprojUpdate(operation: () => Promise<unknown>): void {
         });
 }
 
-function scheduleAsmdefSync(asmdefPath: string): void {
-    const key = normalizeFileSystemPath(asmdefPath);
-    const existingTimer = pendingAsmdefSyncs.get(key);
+function scheduleFileSync(filePath: string): void {
+    const extension = path.extname(filePath).toLowerCase();
 
-    if (existingTimer) {
-        clearTimeout(existingTimer);
+    if (extension === '.cs') {
+        scheduleSync(pendingScripts, filePath);
+    } else if (extension === '.asmdef' || extension === '.asmref') {
+        scheduleSync(pendingAssemblyDefinitions, filePath);
     }
-
-    const timer = setTimeout(() => {
-        pendingAsmdefSyncs.delete(key);
-        enqueueCsprojUpdate(() => syncCsprojForAsmdefScope(asmdefPath));
-    }, syncDebounceMs);
-
-    pendingAsmdefSyncs.set(key, timer);
 }
 
-function scheduleFolderSync(pendingFolders: Set<string>, folderPath: string): void {
-    if (!isAssetPath(folderPath)) {
+function scheduleSync(pendingPaths: Set<string>, changedPath: string): void {
+    if (!isAssetPath(changedPath)) {
         return;
     }
 
-    pendingFolders.add(folderPath);
-    clearTimeout(folderSyncTimer);
+    pendingPaths.add(changedPath);
+    clearTimeout(syncTimer);
 
-    folderSyncTimer = setTimeout(() => {
-        const removedFolders = Array.from(pendingRemovedFolders);
-        const addedFolders = Array.from(pendingAddedFolders);
-        pendingRemovedFolders.clear();
-        pendingAddedFolders.clear();
-        enqueueCsprojUpdate(() => syncFolderChanges(removedFolders, addedFolders));
+    syncTimer = setTimeout(() => {
+        const batch = takePendingBatch();
+        enqueueCsprojUpdate(() => syncBatch(batch));
     }, syncDebounceMs);
+}
+
+function takePendingBatch(): SyncBatch {
+    const batch = {
+        scripts: Array.from(pendingScripts),
+        assemblyDefinitions: Array.from(pendingAssemblyDefinitions),
+        removedFolders: Array.from(pendingRemovedFolders),
+        addedFolders: Array.from(pendingAddedFolders),
+    };
+
+    for (const pendingPaths of [pendingScripts, pendingAssemblyDefinitions, pendingRemovedFolders, pendingAddedFolders]) {
+        pendingPaths.clear();
+    }
+
+    return batch;
 }
 
 function getWorkspaceRootForPath(filePath: string): string | undefined {
@@ -185,18 +152,6 @@ function isAssetPath(filePath: string): boolean {
 
     const relativePath = path.relative(rootPath, filePath);
     return relativePath.split(path.sep)[0] === 'Assets' && !isUnityIgnoredPath(relativePath);
-}
-
-function isAssetFileWithExtension(filePath: string, extension: string): boolean {
-    return path.extname(filePath).toLowerCase() === extension && isAssetPath(filePath);
-}
-
-function isAssetScriptFile(filePath: string): boolean {
-    return isAssetFileWithExtension(filePath, '.cs');
-}
-
-function isAssetAssemblyDefinitionFile(filePath: string): boolean {
-    return isAssetFileWithExtension(filePath, '.asmdef') || isAssetFileWithExtension(filePath, '.asmref');
 }
 
 function isDirectory(filePath: string): boolean {
@@ -244,116 +199,107 @@ function getAllCsprojInfos(rootPath: string): CsprojInfo[] {
         .map(fileName => ({ csprojName: fileName, csprojPath: path.join(rootPath, fileName) }));
 }
 
-function createCsprojContentCache(csprojInfos: CsprojInfo[]): CsprojContentCacheEntry[] {
-    return csprojInfos
-        .filter(({ csprojPath }) => fs.existsSync(csprojPath))
-        .map(({ csprojName, csprojPath }) => {
-            const content = fs.readFileSync(csprojPath, encoding);
-            return { csprojName, csprojPath, originalContent: content, content };
-        });
+function readCsprojEntries(rootPath: string): CsprojContentCacheEntry[] {
+    return getAllCsprojInfos(rootPath).map(info => createCsprojContentEntry(info, fs.readFileSync(info.csprojPath, encoding)));
 }
 
-function writeChangedCsprojEntries(entries: CsprojContentCacheEntry[]): number {
+function writeChangedCsprojEntries(entries: CsprojContentCacheEntry[]): string[] {
     const changedEntries = entries.filter(entry => entry.content !== entry.originalContent);
 
     for (const entry of changedEntries) {
         fs.writeFileSync(entry.csprojPath, entry.content, encoding);
     }
 
-    return changedEntries.length;
+    return changedEntries.map(entry => entry.csprojName);
 }
 
-function reassignScripts(rootPath: string, scriptFiles: string[], entries: CsprojContentCacheEntry[]) {
+function reassignScripts(rootPath: string, scriptFiles: Iterable<string>, entries: CsprojContentCacheEntry[]): Set<string> {
     const resolver = new AssemblyNameResolver(rootPath);
     const missingCsprojNames = new Set<string>();
-    let updatedScripts = 0;
-    let unchangedScripts = 0;
 
     for (const scriptFile of scriptFiles) {
         const target = getCsprojInfoForFile(rootPath, scriptFile, resolver);
-        const result = target
-            ? reassignCompileInclude(entries, target.csprojPath, toCsprojIncludePath(rootPath, scriptFile))
-            : 'unchanged';
 
-        if (result === 'changed') {
-            updatedScripts++;
-            continue;
-        }
-
-        unchangedScripts++;
-
-        if (target && result === 'targetMissing') {
+        if (target && reassignCompileInclude(entries, target.csprojPath, toCsprojIncludePath(rootPath, scriptFile)) === 'targetMissing') {
             missingCsprojNames.add(target.csprojName);
         }
     }
 
-    return { missingCsprojNames, updatedScripts, unchangedScripts };
+    return missingCsprojNames;
 }
 
-function showMissingCsprojErrors(missingCsprojNames: Set<string>): void {
+function applyToEntries(entries: CsprojContentCacheEntry[], update: (content: string) => string | null): void {
+    for (const entry of entries) {
+        const updatedContent = update(entry.content);
+        if (updatedContent) {
+            setCsprojEntryContent(entry, updatedContent);
+        }
+    }
+}
+
+async function syncBatch(batch: SyncBatch) {
+    const allPaths = [...batch.scripts, ...batch.assemblyDefinitions, ...batch.removedFolders, ...batch.addedFolders];
+    const rootPaths = new Set(allPaths.map(getWorkspaceRootForPath));
+
+    for (const rootPath of rootPaths) {
+        if (rootPath) {
+            const isInRoot = (changedPath: string) => getWorkspaceRootForPath(changedPath) === rootPath;
+            syncWorkspaceRoot(rootPath, {
+                scripts: batch.scripts.filter(isInRoot),
+                assemblyDefinitions: batch.assemblyDefinitions.filter(isInRoot),
+                removedFolders: batch.removedFolders.filter(isInRoot),
+                addedFolders: batch.addedFolders.filter(isInRoot),
+            });
+        }
+    }
+}
+
+function syncWorkspaceRoot(rootPath: string, batch: SyncBatch): void {
+    const entries = readCsprojEntries(rootPath);
+    const existingScripts = batch.scripts.filter(scriptFile => fs.existsSync(scriptFile));
+    const deletedIncludes = batch.scripts
+        .filter(scriptFile => !fs.existsSync(scriptFile))
+        .map(scriptFile => toCsprojIncludePath(rootPath, scriptFile));
+
+    for (const folderPath of batch.removedFolders) {
+        const relativeFolderPath = toCsprojIncludePath(rootPath, folderPath);
+        applyToEntries(entries, content => removeCompileIncludesUnderFolder(content, relativeFolderPath));
+    }
+
+    if (deletedIncludes.length > 0) {
+        applyToEntries(entries, content => removeCompileIncludes(content, deletedIncludes));
+    }
+
+    const scannedFolders = [...batch.addedFolders, ...batch.assemblyDefinitions.map(definitionPath => path.dirname(definitionPath))];
+    const scriptsToAssign = new Set([...existingScripts, ...scannedFolders.flatMap(folderPath => findFilesInDirectory(folderPath, '.cs'))]);
+    const missingCsprojNames = reassignScripts(rootPath, scriptsToAssign, entries);
+    const changedCsprojNames = writeChangedCsprojEntries(entries);
+
     for (const csprojName of missingCsprojNames) {
         vscode.window.showErrorMessage(getLocalizedMessage('csprojNotFound', { csprojName }));
     }
+
+    if (changedCsprojNames.length > 0) {
+        vscode.window.showInformationMessage(getSyncSummary(batch, existingScripts, changedCsprojNames));
+    }
 }
 
-async function syncCsprojForAsmdefScope(asmdefPath: string) {
-    const rootPath = getWorkspaceRootForPath(asmdefPath);
-    if (!rootPath) {
-        return;
+function getSyncSummary(batch: SyncBatch, existingScripts: string[], changedCsprojNames: string[]): string {
+    const isSingleScriptChange = batch.scripts.length === 1
+        && batch.assemblyDefinitions.length === 0
+        && batch.removedFolders.length === 0
+        && batch.addedFolders.length === 0;
+
+    if (!isSingleScriptChange) {
+        return getLocalizedMessage('projectsSynced', { csprojCount: changedCsprojNames.length });
     }
 
-    const scriptFiles = findFilesInDirectory(path.dirname(asmdefPath), '.cs');
+    const fileName = path.basename(batch.scripts[0]);
+    const csprojNames = changedCsprojNames.join(', ');
 
-    if (scriptFiles.length === 0) {
-        return;
-    }
-
-    const entries = createCsprojContentCache(getAllCsprojInfos(rootPath));
-    const { missingCsprojNames, updatedScripts, unchangedScripts } = reassignScripts(rootPath, scriptFiles, entries);
-
-    writeChangedCsprojEntries(entries);
-    showMissingCsprojErrors(missingCsprojNames);
-
-    vscode.window.showInformationMessage(getLocalizedMessage('asmdefScopeResynced', {
-        scriptCount: scriptFiles.length,
-        asmdefName: path.basename(asmdefPath),
-        updatedCount: updatedScripts,
-        unchangedCount: unchangedScripts,
-    }));
-}
-
-async function syncFolderChanges(removedFolders: string[], addedFolders: string[]) {
-    const rootPaths = new Set<string>();
-
-    for (const folderPath of [...removedFolders, ...addedFolders]) {
-        const rootPath = getWorkspaceRootForPath(folderPath);
-        if (rootPath) {
-            rootPaths.add(rootPath);
-        }
-    }
-
-    for (const rootPath of rootPaths) {
-        const isInRoot = (folderPath: string) => getWorkspaceRootForPath(folderPath) === rootPath;
-        const entries = createCsprojContentCache(getAllCsprojInfos(rootPath));
-
-        for (const folderPath of removedFolders.filter(isInRoot)) {
-            const relativeFolderPath = toCsprojIncludePath(rootPath, folderPath);
-
-            for (const entry of entries) {
-                entry.content = removeCompileIncludesUnderFolder(entry.content, relativeFolderPath) ?? entry.content;
-            }
-        }
-
-        const scriptFiles = addedFolders.filter(isInRoot).flatMap(folderPath => findFilesInDirectory(folderPath, '.cs'));
-        const { missingCsprojNames } = reassignScripts(rootPath, scriptFiles, entries);
-        const changedCsprojCount = writeChangedCsprojEntries(entries);
-
-        showMissingCsprojErrors(missingCsprojNames);
-
-        if (changedCsprojCount > 0) {
-            vscode.window.showInformationMessage(getLocalizedMessage('foldersSynced', { csprojCount: changedCsprojCount }));
-        }
-    }
+    return existingScripts.length > 0
+        ? getLocalizedMessage('fileAddedToProject', { fileName, csprojName: csprojNames })
+        : getLocalizedMessage('fileRemovedFromProjects', { fileName, csprojNames });
 }
 
 function findNearestAssemblyDefinition(filePath: string, rootPath: string): string | null {
@@ -465,83 +411,6 @@ function getCsprojInfoForFile(rootPath: string, filePath: string, resolver = new
 
     const csprojName = assemblyName ? `${assemblyName}.csproj` : getDefaultCsprojName(toCsprojIncludePath(rootPath, filePath));
     return { csprojName, csprojPath: path.join(rootPath, csprojName) };
-}
-
-function addIncludeToCsprojFile(csprojPath: string, relativePath: string): boolean {
-    const updatedCsprojContent = addCompileInclude(fs.readFileSync(csprojPath, encoding), relativePath);
-
-    if (!updatedCsprojContent) {
-        return false;
-    }
-
-    fs.writeFileSync(csprojPath, updatedCsprojContent, encoding);
-    return true;
-}
-
-async function addToCsproj(filePath: string, notify = true): Promise<CsprojMutationResult> {
-    const rootPath = getWorkspaceRootForPath(filePath);
-    if (!rootPath) {
-        return 'unchanged';
-    }
-
-    const target = getCsprojInfoForFile(rootPath, filePath);
-    if (!target) {
-        return 'unchanged';
-    }
-
-    const { csprojName, csprojPath } = target;
-
-    if (!fs.existsSync(csprojPath)) {
-        vscode.window.showErrorMessage(getLocalizedMessage('csprojNotFound', { csprojName }));
-        return 'unchanged';
-    }
-
-    const relativePath = toCsprojIncludePath(rootPath, filePath);
-    const playerCsprojPath = getPlayerCsprojPath(csprojPath);
-    const addedToPlayerProject = fs.existsSync(playerCsprojPath) && addIncludeToCsprojFile(playerCsprojPath, relativePath);
-    const addedToProject = addIncludeToCsprojFile(csprojPath, relativePath);
-
-    if (notify && addedToProject) {
-        vscode.window.showInformationMessage(getLocalizedMessage('fileAddedToProject', { fileName: path.basename(filePath), csprojName }));
-    }
-
-    return addedToProject || addedToPlayerProject ? 'changed' : 'unchanged';
-}
-
-async function removeFromCsproj(filePath: string, notify = true): Promise<CsprojMutationResult> {
-    const rootPath = getWorkspaceRootForPath(filePath);
-    if (!rootPath) {
-        return 'unchanged';
-    }
-
-    const relativePath = toCsprojIncludePath(rootPath, filePath);
-    const changedProjects: string[] = [];
-
-    for (const { csprojName, csprojPath } of getAllCsprojInfos(rootPath)) {
-        const csprojContent = fs.readFileSync(csprojPath, encoding);
-        const updatedCsprojContent = removeCompileInclude(csprojContent, relativePath);
-
-        if (!updatedCsprojContent) {
-            continue;
-        }
-
-        fs.writeFileSync(csprojPath, updatedCsprojContent, encoding);
-        changedProjects.push(csprojName);
-    }
-
-    if (notify && changedProjects.length > 0) {
-        vscode.window.showInformationMessage(getLocalizedMessage('fileRemovedFromProjects', {
-            fileName: path.basename(filePath),
-            csprojNames: changedProjects.join(', '),
-        }));
-    }
-
-    return changedProjects.length > 0 ? 'changed' : 'unchanged';
-}
-
-async function renameInCsproj(oldFilePath: string, newFilePath: string) {
-    await removeFromCsproj(oldFilePath);
-    await addToCsproj(newFilePath);
 }
 
 export function deactivate() { }
