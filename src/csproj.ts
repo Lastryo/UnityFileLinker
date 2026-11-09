@@ -2,7 +2,12 @@ import * as path from 'path';
 
 export const encoding = 'utf-8';
 
+const firstPassRootFolders = new Set(['Plugins', 'Standard Assets', 'Pro Standard Assets']);
+const compileElementPattern = String.raw`<Compile\b[^>]*?\bInclude=(['"])(.*?)\1[^>]*?(?:\/>|>[\s\S]*?<\/Compile>)`;
+
 export type CsprojMutationResult = 'changed' | 'unchanged';
+
+export type CsprojReassignmentResult = CsprojMutationResult | 'targetMissing';
 
 export type CsprojInfo = {
     csprojName: string;
@@ -56,12 +61,56 @@ export function isEditorScriptPath(filePath: string): boolean {
     return filePath.split(/[\\/]+/).some(segment => segment === 'Editor');
 }
 
+export function isUnityIgnoredName(name: string): boolean {
+    return name.startsWith('.') || name.endsWith('~') || name.toLowerCase() === 'cgi-bin';
+}
+
+export function isUnityIgnoredPath(relativePath: string): boolean {
+    return relativePath.split(/[\\/]+/).some(isUnityIgnoredName);
+}
+
+export function getDefaultCsprojName(relativePath: string): string {
+    const isFirstPass = firstPassRootFolders.has(relativePath.split(/[\\/]+/)[1]);
+    const editorSuffix = isEditorScriptPath(relativePath) ? '-Editor' : '';
+    const firstPassSuffix = isFirstPass ? '-firstpass' : '';
+
+    return `Assembly-CSharp${editorSuffix}${firstPassSuffix}.csproj`;
+}
+
+export function getPlayerCsprojPath(csprojPath: string): string {
+    return csprojPath.replace(/\.csproj$/i, '.Player.csproj');
+}
+
+function parseJsonWithoutBom(content: string): any {
+    return JSON.parse(content.replace(/^\uFEFF/, ''));
+}
+
+function getNonEmptyString(value: unknown): string | null {
+    return typeof value === 'string' && value.trim().length > 0 ? value : null;
+}
+
+export function parseAsmdefName(content: string): string | null {
+    return getNonEmptyString(parseJsonWithoutBom(content).name);
+}
+
+export function parseAsmrefReference(content: string): string | null {
+    return getNonEmptyString(parseJsonWithoutBom(content).reference);
+}
+
+export function parseMetaGuid(content: string): string | null {
+    return content.match(/^guid:\s*([0-9a-fA-F]+)/m)?.[1].toLowerCase() ?? null;
+}
+
 function getLineEnding(content: string): string {
     return content.includes('\r\n') ? '\r\n' : '\n';
 }
 
 function getCompileIncludeMatches(csprojContent: string): RegExpMatchArray[] {
-    return Array.from(csprojContent.matchAll(/<Compile\b[^>]*\bInclude=(['"])(.*?)\1[^>]*(?:\/>|>[\s\S]*?<\/Compile>)/g));
+    return Array.from(csprojContent.matchAll(new RegExp(compileElementPattern, 'g')));
+}
+
+function createCompileLineRegex(): RegExp {
+    return new RegExp(String.raw`^[ \t]*${compileElementPattern}[ \t]*(?:\r?\n|$)`, 'gm');
 }
 
 export function countCompileIncludes(csprojContent: string, relativePath: string): number {
@@ -87,7 +136,7 @@ function inferCompileIndent(itemGroupContent: string, itemGroupIndent: string): 
 }
 
 function getCompileInsertIndex(itemGroupContent: string): number {
-    const compileLineRegex = /^[ \t]*<Compile\b[^>]*\bInclude=(['"])(.*?)\1[^>]*(?:\/>|>[\s\S]*?<\/Compile>)[ \t]*(?:\r?\n|$)/gm;
+    const compileLineRegex = createCompileLineRegex();
     let insertIndex = -1;
     let match: RegExpExecArray | null;
 
@@ -149,10 +198,10 @@ export function addCompileInclude(csprojContent: string, relativePath: string): 
     return `${csprojContent.slice(0, projectCloseMatch.index)}${newItemGroup}${csprojContent.slice(projectCloseMatch.index)}`;
 }
 
-export function removeCompileInclude(csprojContent: string, relativePath: string): string | null {
+function removeCompileIncludesMatching(csprojContent: string, shouldRemove: (includePath: string) => boolean): string | null {
     let removed = false;
-    const updatedContent = csprojContent.replace(/(^[ \t]*<Compile\b[^>]*\bInclude=(['"])(.*?)\2[^>]*(?:\/>|>[\s\S]*?<\/Compile>)[ \t]*(?:\r?\n|$))/gm, (match, _line, _quote, includePath) => {
-        if (isSameCsprojIncludePath(includePath, relativePath)) {
+    const updatedContent = csprojContent.replace(createCompileLineRegex(), (match, _quote, includePath) => {
+        if (shouldRemove(includePath)) {
             removed = true;
             return '';
         }
@@ -161,4 +210,48 @@ export function removeCompileInclude(csprojContent: string, relativePath: string
     });
 
     return removed ? updatedContent : null;
+}
+
+export function removeCompileInclude(csprojContent: string, relativePath: string): string | null {
+    return removeCompileIncludesMatching(csprojContent, includePath => isSameCsprojIncludePath(includePath, relativePath));
+}
+
+export function removeCompileIncludesUnderFolder(csprojContent: string, relativeFolderPath: string): string | null {
+    const folderPrefix = `${normalizeCsprojIncludePath(relativeFolderPath)}\\`;
+    return removeCompileIncludesMatching(csprojContent, includePath => normalizeCsprojIncludePath(includePath).startsWith(folderPrefix));
+}
+
+export function reassignCompileInclude(
+    entries: CsprojContentCacheEntry[],
+    targetCsprojPath: string,
+    relativePath: string,
+): CsprojReassignmentResult {
+    if (!entries.some(entry => isSameFileSystemPath(entry.csprojPath, targetCsprojPath))) {
+        return 'targetMissing';
+    }
+
+    const playerCsprojPath = getPlayerCsprojPath(targetCsprojPath);
+    let changed = false;
+
+    for (const entry of entries) {
+        const isTarget = isSameFileSystemPath(entry.csprojPath, targetCsprojPath) || isSameFileSystemPath(entry.csprojPath, playerCsprojPath);
+
+        if (countCompileIncludes(entry.content, relativePath) > (isTarget ? 1 : 0)) {
+            const withoutInclude = removeCompileInclude(entry.content, relativePath);
+            if (withoutInclude) {
+                entry.content = withoutInclude;
+                changed = true;
+            }
+        }
+
+        if (isTarget) {
+            const withInclude = addCompileInclude(entry.content, relativePath);
+            if (withInclude) {
+                entry.content = withInclude;
+                changed = true;
+            }
+        }
+    }
+
+    return changed ? 'changed' : 'unchanged';
 }

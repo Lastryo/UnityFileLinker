@@ -5,9 +5,16 @@ import {
     countCompileIncludes,
     decodeXmlAttribute,
     escapeXmlAttribute,
+    getDefaultCsprojName,
     hasCompileInclude,
     isEditorScriptPath,
+    isUnityIgnoredPath,
+    parseAsmdefName,
+    parseAsmrefReference,
+    parseMetaGuid,
+    reassignCompileInclude,
     removeCompileInclude,
+    removeCompileIncludesUnderFolder,
     toCsprojIncludePath,
 } from '../csproj';
 
@@ -75,5 +82,128 @@ suite('Csproj helpers', () => {
         assert.strictEqual(isEditorScriptPath('Assets/Editor/Tool.cs'), true);
         assert.strictEqual(isEditorScriptPath('Assets\\Gameplay\\Editor\\Tool.cs'), true);
         assert.strictEqual(isEditorScriptPath('Assets/Gameplay/Player.cs'), false);
+    });
+
+    suite('with a multi-line Compile element after self-closing ones', () => {
+        const mixedProject = [
+            '<Project>',
+            '  <ItemGroup>',
+            '    <Compile Include="Assets\\A.cs" />',
+            '    <Compile Include="Assets\\B.cs" />',
+            '    <Compile Include="Assets\\Linked.cs">',
+            '      <Link>Linked.cs</Link>',
+            '    </Compile>',
+            '  </ItemGroup>',
+            '</Project>',
+            '',
+        ].join('\n');
+
+        test('sees every Compile element', () => {
+            assert.strictEqual(countCompileIncludes(mixedProject, 'Assets\\A.cs'), 1);
+            assert.strictEqual(countCompileIncludes(mixedProject, 'Assets\\B.cs'), 1);
+            assert.strictEqual(countCompileIncludes(mixedProject, 'Assets\\Linked.cs'), 1);
+        });
+
+        test('removes only the requested element', () => {
+            const updated = removeCompileInclude(mixedProject, 'Assets\\A.cs');
+
+            assert.ok(updated);
+            assert.strictEqual(hasCompileInclude(updated, 'Assets\\A.cs'), false);
+            assert.strictEqual(hasCompileInclude(updated, 'Assets\\B.cs'), true);
+            assert.strictEqual(hasCompileInclude(updated, 'Assets\\Linked.cs'), true);
+        });
+
+        test('removes a multi-line element without touching its neighbours', () => {
+            const updated = removeCompileInclude(mixedProject, 'Assets\\Linked.cs');
+
+            assert.ok(updated);
+            assert.strictEqual(hasCompileInclude(updated, 'Assets\\Linked.cs'), false);
+            assert.strictEqual(hasCompileInclude(updated, 'Assets\\B.cs'), true);
+            assert.ok(!updated.includes('<Link>'));
+        });
+
+        test('does not duplicate an existing element', () => {
+            assert.strictEqual(addCompileInclude(mixedProject, 'Assets\\B.cs'), null);
+        });
+    });
+
+    test('removes only includes under the given folder', () => {
+        const project = [
+            '<Project>',
+            '  <ItemGroup>',
+            '    <Compile Include="Assets\\Foo\\A.cs" />',
+            '    <Compile Include="Assets\\Foo\\Sub\\B.cs" />',
+            '    <Compile Include="Assets\\FooBar\\C.cs" />',
+            '  </ItemGroup>',
+            '</Project>',
+            '',
+        ].join('\n');
+        const updated = removeCompileIncludesUnderFolder(project, 'Assets\\Foo');
+
+        assert.ok(updated);
+        assert.strictEqual(hasCompileInclude(updated, 'Assets\\Foo\\A.cs'), false);
+        assert.strictEqual(hasCompileInclude(updated, 'Assets\\Foo\\Sub\\B.cs'), false);
+        assert.strictEqual(hasCompileInclude(updated, 'Assets\\FooBar\\C.cs'), true);
+        assert.strictEqual(removeCompileIncludesUnderFolder(project, 'Assets\\Missing'), null);
+    });
+
+    test('chooses default projects from the project-relative path', () => {
+        assert.strictEqual(getDefaultCsprojName('Assets\\Player.cs'), 'Assembly-CSharp.csproj');
+        assert.strictEqual(getDefaultCsprojName('Assets\\Tools\\Editor\\Tool.cs'), 'Assembly-CSharp-Editor.csproj');
+        assert.strictEqual(getDefaultCsprojName('Assets\\Plugins\\Lib.cs'), 'Assembly-CSharp-firstpass.csproj');
+        assert.strictEqual(getDefaultCsprojName('Assets\\Standard Assets\\Lib.cs'), 'Assembly-CSharp-firstpass.csproj');
+        assert.strictEqual(getDefaultCsprojName('Assets\\Plugins\\Foo\\Editor\\Tool.cs'), 'Assembly-CSharp-Editor-firstpass.csproj');
+        assert.strictEqual(getDefaultCsprojName('Assets\\Game\\Plugins\\Lib.cs'), 'Assembly-CSharp.csproj');
+    });
+
+    test('recognizes paths Unity ignores', () => {
+        assert.strictEqual(isUnityIgnoredPath('Assets\\Samples~\\Demo.cs'), true);
+        assert.strictEqual(isUnityIgnoredPath('Assets\\.hidden\\Demo.cs'), true);
+        assert.strictEqual(isUnityIgnoredPath('Assets\\Game\\Demo.cs'), false);
+    });
+
+    test('parses assembly definition files', () => {
+        assert.strictEqual(parseAsmdefName('\uFEFF{"name":"Gameplay"}'), 'Gameplay');
+        assert.strictEqual(parseAsmdefName('{"name":"  "}'), null);
+        assert.strictEqual(parseAsmrefReference('{"reference":"GUID:abc"}'), 'GUID:abc');
+        assert.strictEqual(parseMetaGuid('fileFormatVersion: 2\nguid: ABC123\n'), 'abc123');
+    });
+
+    suite('reassignCompileInclude', () => {
+        const script = 'Assets\\Game\\Player.cs';
+        const withScript = addCompileInclude(basicProject, script)!;
+        const entry = (csprojName: string, content: string) => ({ csprojName, csprojPath: path.resolve(csprojName), originalContent: content, content });
+
+        test('moves a script to its target project', () => {
+            const oldProject = entry('Assembly-CSharp.csproj', withScript);
+            const newProject = entry('Game.csproj', basicProject);
+
+            assert.strictEqual(reassignCompileInclude([oldProject, newProject], newProject.csprojPath, script), 'changed');
+            assert.strictEqual(hasCompileInclude(oldProject.content, script), false);
+            assert.strictEqual(hasCompileInclude(newProject.content, script), true);
+        });
+
+        test('keeps existing includes when the target project does not exist yet', () => {
+            const oldProject = entry('Assembly-CSharp.csproj', withScript);
+
+            assert.strictEqual(reassignCompileInclude([oldProject], path.resolve('Game.csproj'), script), 'targetMissing');
+            assert.strictEqual(oldProject.content, withScript);
+        });
+
+        test('treats the Player project of the target as a target too', () => {
+            const project = entry('Game.csproj', withScript);
+            const playerProject = entry('Game.Player.csproj', basicProject);
+
+            assert.strictEqual(reassignCompileInclude([project, playerProject], project.csprojPath, script), 'changed');
+            assert.strictEqual(hasCompileInclude(project.content, script), true);
+            assert.strictEqual(hasCompileInclude(playerProject.content, script), true);
+        });
+
+        test('reports unchanged when the script is already in place', () => {
+            const project = entry('Game.csproj', withScript);
+
+            assert.strictEqual(reassignCompileInclude([project], project.csprojPath, script), 'unchanged');
+            assert.strictEqual(project.content, withScript);
+        });
     });
 });

@@ -8,6 +8,8 @@ type MessageKey =
     | 'csprojNotFound'
     | 'asmdefInvalidAssemblyName'
     | 'asmdefReadFailed'
+    | 'asmrefUnresolved'
+    | 'foldersSynced'
     | 'fileAddedToProject'
     | 'fileRemovedFromProjects'
     | 'asmdefScopeResynced';
@@ -19,6 +21,8 @@ const messages: Record<string, Record<MessageKey, string>> = {
         csprojNotFound: '{csprojName} not found',
         asmdefInvalidAssemblyName: '{asmdefName} does not contain a valid assembly name',
         asmdefReadFailed: 'Failed to read {asmdefName}: {error}',
+        asmrefUnresolved: '{asmrefName} references an assembly that could not be found',
+        foldersSynced: 'Updated {csprojCount} project files after folder changes',
         fileAddedToProject: 'Added {fileName} to {csprojName}',
         fileRemovedFromProjects: 'Removed {fileName} from {csprojNames}',
         asmdefScopeResynced: 'Resynced {scriptCount} scripts for {asmdefName}: {updatedCount} updated, {unchangedCount} unchanged',
@@ -29,6 +33,8 @@ const messages: Record<string, Record<MessageKey, string>> = {
         csprojNotFound: '{csprojName} не найден',
         asmdefInvalidAssemblyName: '{asmdefName} не содержит корректное имя сборки',
         asmdefReadFailed: 'Не удалось прочитать {asmdefName}: {error}',
+        asmrefUnresolved: '{asmrefName} ссылается на сборку, которую не удалось найти',
+        foldersSynced: 'Обновлено файлов проектов после изменения папок: {csprojCount}',
         fileAddedToProject: '{fileName} добавлен в {csprojName}',
         fileRemovedFromProjects: '{fileName} удалён из {csprojNames}',
         asmdefScopeResynced: 'Повторно синхронизировано {scriptCount} скриптов для {asmdefName}: {updatedCount} обновлено, {unchangedCount} без изменений',

@@ -27,9 +27,11 @@ You can also install it from inside Visual Studio Code:
 - Automatically adds new `.cs` files under `Assets` to the correct `.csproj`.
 - Removes deleted `.cs` files from project files.
 - Updates `.csproj` entries when `.cs` files are renamed or moved.
-- Supports Unity `.asmdef` files.
+- Supports Unity `.asmdef` and `.asmref` files.
 - Resolves scripts to the matching assembly project when an `.asmdef` is present.
-- Falls back to Unity default projects when no valid `.asmdef` is found.
+- Falls back to Unity default projects, including `firstpass` ones, when a script has no `.asmdef`.
+- Leaves project files untouched and shows a warning when the governing `.asmdef` is invalid.
+- Updates project files when folders containing scripts are renamed, moved, or deleted.
 - Handles `Editor` scripts through Unity editor project conventions.
 - Resyncs affected scripts when `.asmdef` files are created, changed, deleted, renamed, or moved.
 - Removes stale script references from old `.csproj` files during `.asmdef` resync.
@@ -75,7 +77,7 @@ In this case, `Player.cs` will be linked to:
 Gameplay.csproj
 ```
 
-If no valid `.asmdef` is found, UnityFileLinker falls back to Unity's default project files:
+If no `.asmdef` applies to the script, UnityFileLinker falls back to Unity's default project files:
 
 ```text
 Assembly-CSharp.csproj
