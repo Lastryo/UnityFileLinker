@@ -4,6 +4,42 @@ All notable changes to the `UnityFileLinker` extension will be documented in thi
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.2.0] - 2026-11-09
+
+### Added
+
+- Added `.csproj` updates when folders containing scripts are renamed, moved, copied, or deleted.
+- Added `.asmref` support, with references by assembly name or GUID.
+- Added `Assembly-CSharp-firstpass` and `Assembly-CSharp-Editor-firstpass` as default targets for `Assets/Plugins`, `Assets/Standard Assets`, and `Assets/Pro Standard Assets`.
+- Added Player project support: scripts are kept in `*.Player.csproj` alongside their main project.
+
+### Changed
+
+- The extension now activates only in Unity workspaces.
+- Notifications now use complete localized messages.
+- `.asmdef` resync events are debounced.
+- Scripts stay where they are, with a single warning, when their `.asmdef` is invalid. They no longer fall back to `Assembly-CSharp`.
+
+### Fixed
+
+- Fixed removal of one script deleting neighbouring entries when a multi-line `<Compile>` element followed them.
+- Fixed scripts being dropped from every project when the target `.csproj` had not been generated yet.
+- Fixed all scripts being treated as editor scripts when the project lived under a folder named `Editor`.
+- Fixed files outside the root `Assets` folder being added to projects.
+- Fixed scripts in folders Unity ignores, such as `Samples~`, being added during resync.
+- Fixed `.asmdef` files with a BOM being reported as invalid.
+- Fixed scripts being inserted after references in the compile item group.
+
+### Removed
+
+- Removed the template command and the unused `xml2js` dependency.
+
+## [0.1.1] - 2026-04-30
+
+### Fixed
+
+- New `<Compile>` entries are now inserted after existing ones.
+
 ## [0.1.0] - 2026-04-30
 
 ### Added

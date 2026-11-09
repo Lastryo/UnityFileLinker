@@ -3,7 +3,7 @@
   "displayName": "UnityFileLinker",
   "description": "Unity File Linker automatically keeps Unity-generated .csproj files in sync with C# scripts and .asmdef files.",
   "publisher": "lastryo",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -34,14 +34,10 @@
     "lint": "eslint src",
     "test": "vscode-test"
   },
-  "dependencies": {
-    "xml2js": "^0.4.23"
-  },
   "devDependencies": {
     "@types/mocha": "^10.0.9",
     "@types/node": "20.x",
     "@types/vscode": "^1.95.0",
-    "@types/xml2js": "^0.4.14",
     "@typescript-eslint/eslint-plugin": "^8.10.0",
     "@typescript-eslint/parser": "^8.7.0",
     "@vscode/test-cli": "^0.0.10",
