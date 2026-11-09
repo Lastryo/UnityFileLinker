@@ -24,7 +24,7 @@ You can also install it from inside Visual Studio Code:
 
 ## Features
 
-- Automatically adds new `.cs` files under `Assets` to the correct `.csproj`.
+- Automatically adds new `.cs` files under `Assets` and embedded packages in `Packages` to the correct `.csproj`.
 - Removes deleted `.cs` files from project files.
 - Updates `.csproj` entries when `.cs` files are renamed or moved.
 - Supports Unity `.asmdef` and `.asmref` files.
@@ -41,16 +41,16 @@ You can also install it from inside Visual Studio Code:
 
 ## How it works
 
-UnityFileLinker watches files inside the Unity `Assets` folder:
-
-```text
-**/Assets/**/*.cs
-**/Assets/**/*.asmdef
-```
+UnityFileLinker watches C# scripts and assembly definition files inside the Unity `Assets` and `Packages` folders. Packages from `Library/PackageCache` are not modified.
 
 When a C# script is created, deleted, renamed, or moved, the extension finds the correct `.csproj` file and updates its `<Compile Include="...">` entries.
 
 When an `.asmdef` file changes, UnityFileLinker scans the affected folder, resolves the correct target project for each script, removes stale references from other project files, and writes only the `.csproj` files that actually changed.
+
+## Commands and settings
+
+- **UnityFileLinker: Resync Project Files** brings every `.csproj` in line with the scripts on disk. Use it after changes made while VS Code was closed.
+- `unityFileLinker.showInfoNotifications` shows a pop-up for routine updates. It is off by default: updates appear in the status bar and in the `UnityFileLinker` output channel, and only warnings and errors pop up.
 
 ## Assembly Definition support
 

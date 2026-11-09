@@ -10,6 +10,8 @@ type MessageKey =
     | 'asmdefReadFailed'
     | 'asmrefUnresolved'
     | 'projectsSynced'
+    | 'projectsUpToDate'
+    | 'noUnityProject'
     | 'fileAddedToProject'
     | 'fileRemovedFromProjects';
 
@@ -22,6 +24,8 @@ const messages: Record<string, Record<MessageKey, string>> = {
         asmdefReadFailed: 'Failed to read {asmdefName}: {error}',
         asmrefUnresolved: '{asmrefName} references an assembly that could not be found',
         projectsSynced: 'Updated {csprojCount} project files',
+        projectsUpToDate: 'Project files are already up to date',
+        noUnityProject: 'No Unity project found in this workspace',
         fileAddedToProject: 'Added {fileName} to {csprojName}',
         fileRemovedFromProjects: 'Removed {fileName} from {csprojNames}',
     },
@@ -33,6 +37,8 @@ const messages: Record<string, Record<MessageKey, string>> = {
         asmdefReadFailed: 'Не удалось прочитать {asmdefName}: {error}',
         asmrefUnresolved: '{asmrefName} ссылается на сборку, которую не удалось найти',
         projectsSynced: 'Обновлено файлов проектов: {csprojCount}',
+        projectsUpToDate: 'Файлы проектов уже актуальны',
+        noUnityProject: 'В этом рабочем пространстве нет проекта Unity',
         fileAddedToProject: '{fileName} добавлен в {csprojName}',
         fileRemovedFromProjects: '{fileName} удалён из {csprojNames}',
     },

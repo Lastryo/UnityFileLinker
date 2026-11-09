@@ -8,7 +8,7 @@ import {
     encoding,
     getDefaultCsprojName,
     isUnityIgnoredName,
-    isUnityIgnoredPath,
+    isUnitySourcePath,
     normalizeFileSystemPath,
     parseAsmdefName,
     parseAsmrefReference,
@@ -16,10 +16,12 @@ import {
     reassignCompileInclude,
     removeCompileIncludes,
     removeCompileIncludesUnderFolder,
+    removeStaleCompileIncludes,
     setCsprojEntryContent,
     toCsprojIncludePath,
 } from './csproj';
 import { getLocalizedMessage } from './localization';
+import { initializeNotifications, logInfo, notifyError, notifyInfo, notifyWarning } from './notifications';
 
 type SyncBatch = {
     scripts: string[];
@@ -29,6 +31,7 @@ type SyncBatch = {
 };
 
 const syncDebounceMs = 250;
+const sourceRootFolders = ['Assets', 'Packages'];
 const nonFolderDeleteExtensions = new Set(['.cs', '.asmdef', '.asmref', '.meta']);
 let csprojUpdateQueue = Promise.resolve();
 const pendingScripts = new Set<string>();
@@ -38,8 +41,10 @@ const pendingAddedFolders = new Set<string>();
 let syncTimer: NodeJS.Timeout | undefined;
 
 export function activate(context: vscode.ExtensionContext) {
-    const fileWatcher = vscode.workspace.createFileSystemWatcher('**/Assets/**/*.{cs,asmdef,asmref}');
-    const assetWatcher = vscode.workspace.createFileSystemWatcher('**/Assets/**', false, true, false);
+    initializeNotifications(context);
+
+    const fileWatcher = vscode.workspace.createFileSystemWatcher('**/{Assets,Packages}/**/*.{cs,asmdef,asmref}');
+    const assetWatcher = vscode.workspace.createFileSystemWatcher('**/{Assets,Packages}/**', false, true, false);
     const onFileEvent = (uri: vscode.Uri) => scheduleFileSync(uri.fsPath);
 
     fileWatcher.onDidCreate(onFileEvent);
@@ -80,7 +85,11 @@ export function activate(context: vscode.ExtensionContext) {
         takePendingBatch();
     });
 
-    context.subscriptions.push(fileWatcher, assetWatcher, renameDisposable, pendingSyncDisposable);
+    const resyncCommand = vscode.commands.registerCommand('unityFileLinker.resyncProject', () => {
+        enqueueCsprojUpdate(resyncUnityProjects);
+    });
+
+    context.subscriptions.push(fileWatcher, assetWatcher, renameDisposable, pendingSyncDisposable, resyncCommand);
 }
 
 function enqueueCsprojUpdate(operation: () => Promise<unknown>): void {
@@ -90,7 +99,7 @@ function enqueueCsprojUpdate(operation: () => Promise<unknown>): void {
             try {
                 await operation();
             } catch (err: any) {
-                vscode.window.showErrorMessage(getLocalizedMessage('csprojUpdateFailed', { error: err.message }));
+                notifyError(getLocalizedMessage('csprojUpdateFailed', { error: err.message }));
             }
         });
 }
@@ -106,7 +115,7 @@ function scheduleFileSync(filePath: string): void {
 }
 
 function scheduleSync(pendingPaths: Set<string>, changedPath: string): void {
-    if (!isAssetPath(changedPath)) {
+    if (!isSourcePath(changedPath)) {
         return;
     }
 
@@ -144,14 +153,9 @@ function isInsideWorkspacePath(filePath: string, rootPath: string): boolean {
     return relativePath === '' || (!relativePath.startsWith('..') && !path.isAbsolute(relativePath));
 }
 
-function isAssetPath(filePath: string): boolean {
+function isSourcePath(filePath: string): boolean {
     const rootPath = getWorkspaceRootForPath(filePath);
-    if (!rootPath || !isInsideWorkspacePath(filePath, rootPath)) {
-        return false;
-    }
-
-    const relativePath = path.relative(rootPath, filePath);
-    return relativePath.split(path.sep)[0] === 'Assets' && !isUnityIgnoredPath(relativePath);
+    return rootPath !== undefined && isInsideWorkspacePath(filePath, rootPath) && isUnitySourcePath(path.relative(rootPath, filePath));
 }
 
 function isDirectory(filePath: string): boolean {
@@ -187,7 +191,7 @@ function findFilesInDirectory(directoryPath: string, suffix: string): string[] {
             }
         }
     } catch (err: any) {
-        vscode.window.showWarningMessage(getLocalizedMessage('scanFailed', { directoryName: path.basename(directoryPath), error: err.message }));
+        notifyWarning(getLocalizedMessage('scanFailed', { directoryName: path.basename(directoryPath), error: err.message }));
     }
 
     return files;
@@ -275,12 +279,55 @@ function syncWorkspaceRoot(rootPath: string, batch: SyncBatch): void {
     const missingCsprojNames = reassignScripts(rootPath, scriptsToAssign, entries);
     const changedCsprojNames = writeChangedCsprojEntries(entries);
 
-    for (const csprojName of missingCsprojNames) {
-        vscode.window.showErrorMessage(getLocalizedMessage('csprojNotFound', { csprojName }));
-    }
+    reportMissingCsprojs(missingCsprojNames);
 
     if (changedCsprojNames.length > 0) {
-        vscode.window.showInformationMessage(getSyncSummary(batch, existingScripts, changedCsprojNames));
+        notifyInfo(getSyncSummary(batch, existingScripts, changedCsprojNames));
+        logInfo(`Changed: ${changedCsprojNames.join(', ')}`);
+    }
+}
+
+function reportMissingCsprojs(missingCsprojNames: Set<string>): void {
+    for (const csprojName of missingCsprojNames) {
+        notifyError(getLocalizedMessage('csprojNotFound', { csprojName }));
+    }
+}
+
+async function resyncUnityProjects() {
+    const rootPaths = (vscode.workspace.workspaceFolders ?? [])
+        .map(folder => folder.uri.fsPath)
+        .filter(rootPath => fs.existsSync(path.join(rootPath, 'ProjectSettings', 'ProjectVersion.txt')));
+
+    if (rootPaths.length === 0) {
+        notifyWarning(getLocalizedMessage('noUnityProject'));
+        return;
+    }
+
+    for (const rootPath of rootPaths) {
+        resyncWorkspaceRoot(rootPath);
+    }
+}
+
+function resyncWorkspaceRoot(rootPath: string): void {
+    const entries = readCsprojEntries(rootPath);
+    const scriptFiles = sourceRootFolders.flatMap(folder => findFilesInDirectory(path.join(rootPath, folder), '.cs'));
+    const existingIncludes = scriptFiles.map(scriptFile => toCsprojIncludePath(rootPath, scriptFile));
+
+    applyToEntries(entries, content => removeStaleCompileIncludes(content, existingIncludes));
+
+    const missingCsprojNames = reassignScripts(rootPath, scriptFiles, entries);
+    const changedCsprojNames = writeChangedCsprojEntries(entries);
+
+    reportMissingCsprojs(missingCsprojNames);
+
+    const summary = changedCsprojNames.length > 0
+        ? getLocalizedMessage('projectsSynced', { csprojCount: changedCsprojNames.length })
+        : getLocalizedMessage('projectsUpToDate');
+
+    notifyInfo(summary, { alwaysShow: true });
+
+    if (changedCsprojNames.length > 0) {
+        logInfo(`Changed: ${changedCsprojNames.join(', ')}`);
     }
 }
 
@@ -352,7 +399,7 @@ class AssemblyNameResolver {
                 ? this.readAsmrefAssemblyName(content, definitionName)
                 : this.readAsmdefAssemblyName(content, definitionName);
         } catch (err: any) {
-            vscode.window.showWarningMessage(getLocalizedMessage('asmdefReadFailed', { asmdefName: definitionName, error: err.message }));
+            notifyWarning(getLocalizedMessage('asmdefReadFailed', { asmdefName: definitionName, error: err.message }));
             return null;
         }
     }
@@ -360,7 +407,7 @@ class AssemblyNameResolver {
     private readAsmdefAssemblyName(content: string, asmdefName: string): string | null {
         const assemblyName = parseAsmdefName(content);
         if (!assemblyName) {
-            vscode.window.showWarningMessage(getLocalizedMessage('asmdefInvalidAssemblyName', { asmdefName }));
+            notifyWarning(getLocalizedMessage('asmdefInvalidAssemblyName', { asmdefName }));
         }
 
         return assemblyName;
@@ -375,7 +422,7 @@ class AssemblyNameResolver {
 
         const asmdefPath = guid ? this.findAsmdefByGuid(guid.toLowerCase()) : undefined;
         if (!asmdefPath) {
-            vscode.window.showWarningMessage(getLocalizedMessage('asmrefUnresolved', { asmrefName }));
+            notifyWarning(getLocalizedMessage('asmrefUnresolved', { asmrefName }));
             return null;
         }
 
@@ -400,7 +447,7 @@ class AssemblyNameResolver {
     }
 }
 
-/** Returns null when the script belongs to an assembly whose definition cannot be read, so its project is unknown. */
+/** Returns null when the script's project is unknown: its definition cannot be read, or Unity does not compile it. */
 function getCsprojInfoForFile(rootPath: string, filePath: string, resolver = new AssemblyNameResolver(rootPath)): CsprojInfo | null {
     const definitionPath = findNearestAssemblyDefinition(filePath, rootPath);
     const assemblyName = definitionPath ? resolver.getAssemblyName(definitionPath) : undefined;
@@ -410,7 +457,7 @@ function getCsprojInfoForFile(rootPath: string, filePath: string, resolver = new
     }
 
     const csprojName = assemblyName ? `${assemblyName}.csproj` : getDefaultCsprojName(toCsprojIncludePath(rootPath, filePath));
-    return { csprojName, csprojPath: path.join(rootPath, csprojName) };
+    return csprojName ? { csprojName, csprojPath: path.join(rootPath, csprojName) } : null;
 }
 
 export function deactivate() { }

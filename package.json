@@ -26,6 +26,25 @@
     "workspaceContains:ProjectSettings/ProjectVersion.txt"
   ],
   "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "unityFileLinker.resyncProject",
+        "title": "%command.resyncProject.title%",
+        "category": "UnityFileLinker"
+      }
+    ],
+    "configuration": {
+      "title": "UnityFileLinker",
+      "properties": {
+        "unityFileLinker.showInfoNotifications": {
+          "type": "boolean",
+          "default": false,
+          "description": "%config.showInfoNotifications.description%"
+        }
+      }
+    }
+  },
   "scripts": {
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",

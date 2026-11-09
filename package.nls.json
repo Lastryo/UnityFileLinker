@@ -1,0 +1,4 @@
+{
+  "command.resyncProject.title": "Resync Project Files",
+  "config.showInfoNotifications.description": "Show a pop-up for routine project file updates. They always appear in the status bar and in the UnityFileLinker output channel."
+}

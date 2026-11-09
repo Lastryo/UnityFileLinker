@@ -2,6 +2,7 @@ import * as path from 'path';
 
 export const encoding = 'utf-8';
 
+const sourceRootFolders = new Set(['Assets', 'Packages']);
 const firstPassRootFolders = new Set(['Plugins', 'Standard Assets', 'Pro Standard Assets']);
 const compileElementPattern = String.raw`<Compile\b[^>]*?\bInclude=(['"])(.*?)\1[^>]*?(?:\/>|>[\s\S]*?<\/Compile>)`;
 
@@ -71,7 +72,24 @@ export function isUnityIgnoredPath(relativePath: string): boolean {
     return relativePath.split(/[\\/]+/).some(isUnityIgnoredName);
 }
 
-export function getDefaultCsprojName(relativePath: string): string {
+function getFirstPathSegment(relativePath: string): string {
+    return relativePath.split(/[\\/]+/)[0];
+}
+
+function isUnderSourceRoot(relativePath: string): boolean {
+    return sourceRootFolders.has(getFirstPathSegment(relativePath));
+}
+
+export function isUnitySourcePath(relativePath: string): boolean {
+    return isUnderSourceRoot(relativePath) && !isUnityIgnoredPath(relativePath);
+}
+
+/** Returns null outside Assets, where Unity compiles only scripts that belong to an assembly definition. */
+export function getDefaultCsprojName(relativePath: string): string | null {
+    if (getFirstPathSegment(relativePath) !== 'Assets') {
+        return null;
+    }
+
     const isFirstPass = firstPassRootFolders.has(relativePath.split(/[\\/]+/)[1]);
     const editorSuffix = isEditorScriptPath(relativePath) ? '-Editor' : '';
     const firstPassSuffix = isFirstPass ? '-firstpass' : '';
@@ -241,6 +259,12 @@ export function removeCompileInclude(csprojContent: string, relativePath: string
 export function removeCompileIncludes(csprojContent: string, relativePaths: string[]): string | null {
     const normalizedPaths = new Set(relativePaths.map(normalizeCsprojIncludePath));
     return removeCompileIncludesMatching(csprojContent, includePath => normalizedPaths.has(normalizeCsprojIncludePath(includePath)));
+}
+
+export function removeStaleCompileIncludes(csprojContent: string, existingRelativePaths: string[]): string | null {
+    const existingPaths = new Set(existingRelativePaths.map(normalizeCsprojIncludePath));
+    return removeCompileIncludesMatching(csprojContent, includePath =>
+        isUnderSourceRoot(decodeXmlAttribute(includePath)) && !existingPaths.has(normalizeCsprojIncludePath(includePath)));
 }
 
 export function removeCompileIncludesUnderFolder(csprojContent: string, relativeFolderPath: string): string | null {

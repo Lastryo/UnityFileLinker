@@ -12,13 +12,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - Added `.asmref` support, with references by assembly name or GUID.
 - Added `Assembly-CSharp-firstpass` and `Assembly-CSharp-Editor-firstpass` as default targets for `Assets/Plugins`, `Assets/Standard Assets`, and `Assets/Pro Standard Assets`.
 - Added Player project support: scripts are kept in `*.Player.csproj` alongside their main project.
+- Added the `UnityFileLinker: Resync Project Files` command.
+- Added support for embedded packages in the `Packages` folder.
+- Added the `UnityFileLinker` output channel and the `unityFileLinker.showInfoNotifications` setting.
 
 ### Changed
 
 - The extension now activates only in Unity workspaces.
 - Notifications now use complete localized messages.
 - File changes are now processed in batches: a branch switch or asset import reads and writes each `.csproj` once and shows one notification.
-- `.asmdef` changes that do not affect any project no longer show a notification.
+- Routine updates now appear in the status bar and output channel instead of pop-ups. Warnings and errors still pop up.
 - Scripts stay where they are, with a single warning, when their `.asmdef` is invalid. They no longer fall back to `Assembly-CSharp`.
 
 ### Fixed

@@ -9,3 +9,4 @@ src/**
 **/*.ts
 **/.vscode-test.*
 out/test/**
+.github/**

@@ -10,6 +10,7 @@ import {
     hasCompileInclude,
     isEditorScriptPath,
     isUnityIgnoredPath,
+    isUnitySourcePath,
     parseAsmdefName,
     parseAsmrefReference,
     parseMetaGuid,
@@ -17,6 +18,7 @@ import {
     removeCompileInclude,
     removeCompileIncludes,
     removeCompileIncludesUnderFolder,
+    removeStaleCompileIncludes,
     setCsprojEntryContent,
     toCsprojIncludePath,
 } from '../csproj';
@@ -166,6 +168,38 @@ suite('Csproj helpers', () => {
         assert.strictEqual(getDefaultCsprojName('Assets\\Standard Assets\\Lib.cs'), 'Assembly-CSharp-firstpass.csproj');
         assert.strictEqual(getDefaultCsprojName('Assets\\Plugins\\Foo\\Editor\\Tool.cs'), 'Assembly-CSharp-Editor-firstpass.csproj');
         assert.strictEqual(getDefaultCsprojName('Assets\\Game\\Plugins\\Lib.cs'), 'Assembly-CSharp.csproj');
+    });
+
+    test('has no default project outside Assets', () => {
+        assert.strictEqual(getDefaultCsprojName('Packages\\com.test\\Loose.cs'), null);
+    });
+
+    test('treats Assets and embedded packages as source paths', () => {
+        assert.strictEqual(isUnitySourcePath('Assets\\Game\\Player.cs'), true);
+        assert.strictEqual(isUnitySourcePath('Packages/com.test/Runtime/Script.cs'), true);
+        assert.strictEqual(isUnitySourcePath('Packages\\com.test\\Samples~\\Demo.cs'), false);
+        assert.strictEqual(isUnitySourcePath('Library\\PackageCache\\com.x\\Lib.cs'), false);
+    });
+
+    test('removes stale includes only under Assets and Packages', () => {
+        const project = [
+            '<Project>',
+            '  <ItemGroup>',
+            '    <Compile Include="Assets/Present.cs" />',
+            '    <Compile Include="Assets\\Stale.cs" />',
+            '    <Compile Include="Packages/com.test/Stale.cs" />',
+            '    <Compile Include="Library/PackageCache/com.x/Lib.cs" />',
+            '  </ItemGroup>',
+            '</Project>',
+            '',
+        ].join('\n');
+        const updated = removeStaleCompileIncludes(project, ['Assets\\Present.cs']);
+
+        assert.ok(updated);
+        assert.strictEqual(hasCompileInclude(updated, 'Assets\\Present.cs'), true);
+        assert.strictEqual(hasCompileInclude(updated, 'Assets\\Stale.cs'), false);
+        assert.strictEqual(hasCompileInclude(updated, 'Packages\\com.test\\Stale.cs'), false);
+        assert.strictEqual(hasCompileInclude(updated, 'Library\\PackageCache\\com.x\\Lib.cs'), true);
     });
 
     test('recognizes paths Unity ignores', () => {
