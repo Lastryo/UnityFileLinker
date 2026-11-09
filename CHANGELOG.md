@@ -4,7 +4,7 @@ All notable changes to the `UnityFileLinker` extension will be documented in thi
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
-## [0.2.0] - 2026-11-09
+## [0.2.0] - 2026-11-10
 
 ### Added
 

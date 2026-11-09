@@ -7,7 +7,11 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -16,3 +20,6 @@ jobs:
           cache: npm
       - run: npm ci
       - run: xvfb-run -a npm test
+        if: runner.os == 'Linux'
+      - run: npm test
+        if: runner.os != 'Linux'

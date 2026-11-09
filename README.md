@@ -8,7 +8,7 @@ It helps reduce manual project regeneration and keeps VS Code aware of newly cre
 
 When working with Unity projects in VS Code, `.csproj` files can sometimes get out of sync after moving scripts, creating new files, deleting files, or changing `.asmdef` structure.
 
-UnityFileLinker watches your Unity `Assets` folder and updates the related `.csproj` files automatically, so your C# project references stay closer to the actual Unity project structure.
+UnityFileLinker watches your Unity `Assets` folder and embedded packages and updates the related `.csproj` files automatically, so your C# project references stay closer to the actual Unity project structure.
 
 ## Installation
 
@@ -94,7 +94,7 @@ Assembly-CSharp-Editor.csproj
 
 UnityFileLinker does not generate `.csproj` files by itself. It updates project files that already exist in the Unity project root.
 
-If Unity has not generated a project file for a newly created or renamed `.asmdef` yet, the extension may show a warning that the corresponding `.csproj` was not found. In that case, regenerate project files from Unity and try again.
+If Unity has not generated a project file for a newly created or renamed `.asmdef` yet, the extension shows an error that the corresponding `.csproj` was not found and leaves the scripts in their current project. In that case, regenerate project files from Unity.
 
 ## License
 
